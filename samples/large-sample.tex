@@ -1,0 +1,430 @@
+% A longer sample document for the browser LaTeX editor.
+% Every package below ships with the in-browser compiler, and Latin Modern
+% fonts with T1 encoding avoid downloading the separate 60 MB cm-super bundle.
+% The error tables in Section 6 come from the procedure in Section 5.
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in, headheight=14pt]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\nouppercase{\leftmark}}
+\fancyhead[R]{Heat flow in a thin rod}
+\fancyfoot[C]{\thepage}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\sci}[2]{\ensuremath{#1 \times 10^{#2}}}
+
+\title{Heat Flow in a Thin Rod:\\ From Fourier Series to Finite Differences}
+\author{A sample document for the browser LaTeX editor}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This document follows one problem, the flow of heat along a thin insulated rod, from its physical derivation to three numerical methods that approximate it. Section~\ref{sec:model} derives the heat equation from Fourier's law and conservation of energy. Section~\ref{sec:exact} solves it exactly with a Fourier sine series, which later serves as a reference solution. Section~\ref{sec:schemes} introduces the explicit, implicit, and Crank--Nicolson finite-difference schemes and analyses their stability, and Section~\ref{sec:experiments} compares their accuracy for two choices of time step. The document is long enough to exercise page navigation, search, and source navigation in the editor.
+\end{abstract}
+
+\tableofcontents
+
+\section{Introduction}\label{sec:introduction}
+
+Heat moves from hot regions to cold ones, and the rate at which it moves depends on how sharply the temperature changes in space. Joseph Fourier turned this observation into a quantitative law and, in the process, introduced the series that now carry his name~\cite{fourier1822}. The resulting partial differential equation, the \emph{heat equation}, is one of the simplest models of diffusion. It describes not only temperature but also the spread of a dissolved chemical, the smoothing of an image, and the pricing of certain financial options.
+
+The heat equation is also a standard test problem for numerical methods. Its exact solutions are known for simple geometries, so the error of an approximation can be measured precisely, and its behaviour is easy to interpret: every solution becomes smoother as time passes. A numerical method that fails to reproduce this smoothing, or that produces growing oscillations instead, is clearly wrong.
+
+This document is organised as follows. Section~\ref{sec:model} builds the mathematical model and Section~\ref{sec:exact} constructs the exact solution. Section~\ref{sec:schemes} discretises the problem and studies stability, Section~\ref{sec:implementation} describes an implementation, and Section~\ref{sec:experiments} reports numerical experiments. Section~\ref{sec:discussion} discusses the trade-offs between the methods, and Section~\ref{sec:conclusion} concludes. The appendices contain a derivation and a summary of notation.
+
+\section{The physical model}\label{sec:model}
+
+Consider a rod of length $L$ whose lateral surface is perfectly insulated, so that heat can flow only along its axis. Let $u(x,t)$ denote the temperature at position $x \in [0, L]$ and time $t \ge 0$. We assume that the rod is thin enough for the temperature to be uniform over each cross-section, and that its material properties do not depend on temperature.
+
+\subsection{Fourier's law}
+
+Fourier's law states that the heat flux $q$, the rate at which heat energy crosses a unit area per unit time, is proportional to the temperature gradient and points from hot to cold:
+\begin{equation}\label{eq:fourier-law}
+  q(x,t) = -k \, \frac{\partial u}{\partial x}(x,t),
+\end{equation}
+where $k > 0$ is the thermal conductivity of the material. The minus sign records the fact that heat flows down the temperature gradient.
+
+\subsection{Conservation of energy}
+
+Take an arbitrary segment $[a, b]$ of the rod. The thermal energy stored in the segment is $\int_a^b \rho c \, u \, dx$, where $\rho$ is the density and $c$ the specific heat capacity. In the absence of internal heat sources, this energy changes only because heat crosses the two ends of the segment:
+\begin{equation}
+  \frac{d}{dt} \int_a^b \rho c \, u(x,t) \, dx = q(a,t) - q(b,t) = -\int_a^b \frac{\partial q}{\partial x}(x,t) \, dx .
+\end{equation}
+Since the segment is arbitrary, the integrands must agree. Substituting Fourier's law~\eqref{eq:fourier-law} gives the \emph{heat equation}
+\begin{equation}\label{eq:heat}
+  \frac{\partial u}{\partial t} = \alpha \, \frac{\partial^2 u}{\partial x^2},
+  \qquad \alpha = \frac{k}{\rho c},
+\end{equation}
+where $\alpha$ is the thermal diffusivity. Its units are length squared per unit time, so the time needed for heat to diffuse across a distance $\ell$ scales like $\ell^2 / \alpha$.
+
+To simplify the analysis we rescale position by $L$ and time by $L^2 / \alpha$. In the new variables the rod occupies the unit interval and the diffusivity equals one:
+\begin{equation}\label{eq:heat-scaled}
+  u_t = u_{xx}, \qquad 0 < x < 1, \quad t > 0.
+\end{equation}
+All results below refer to this scaled problem.
+
+\subsection{Boundary and initial conditions}
+
+Equation~\eqref{eq:heat-scaled} needs one condition at each end of the rod and an initial temperature profile. Three kinds of boundary condition are common:
+\begin{description}
+  \item[Dirichlet.] The temperature is prescribed, for example $u(0,t) = u(1,t) = 0$ when both ends touch a large bath of ice water.
+  \item[Neumann.] The flux is prescribed. An insulated end has zero flux, which by Fourier's law means $u_x = 0$ at that end.
+  \item[Robin.] The flux is proportional to the difference between the end temperature and the surroundings, $-k u_x = h(u - u_\infty)$, which models convective cooling by air or water.
+\end{description}
+Throughout this document we use homogeneous Dirichlet conditions together with an initial temperature
+\begin{equation}\label{eq:initial}
+  u(x, 0) = f(x), \qquad 0 \le x \le 1,
+\end{equation}
+where $f$ is continuous and satisfies $f(0) = f(1) = 0$, so that the data are compatible with the boundary conditions.
+
+\begin{definition}
+A \emph{classical solution} of~\eqref{eq:heat-scaled} and~\eqref{eq:initial} is a function $u$ that is continuous on $[0,1] \times [0,\infty)$, twice continuously differentiable in $x$ and once in $t$ for $t > 0$, satisfies the equation in the interior, and attains the boundary and initial values.
+\end{definition}
+
+\section{An exact solution}\label{sec:exact}
+
+\subsection{Separation of variables}
+
+We look for solutions of the special form $u(x,t) = X(x)\,T(t)$. Substituting into~\eqref{eq:heat-scaled} and dividing by $X T$ gives
+\begin{equation}
+  \frac{T'(t)}{T(t)} = \frac{X''(x)}{X(x)} .
+\end{equation}
+The left side depends only on $t$ and the right side only on $x$, so both must equal a constant, which we write as $-\lambda$. This produces two ordinary differential equations:
+\begin{align}
+  X'' + \lambda X &= 0, \qquad X(0) = X(1) = 0, \label{eq:eigen} \\
+  T' + \lambda T &= 0. \label{eq:time}
+\end{align}
+Problem~\eqref{eq:eigen} has non-zero solutions only when $\lambda = \lambda_n = (n\pi)^2$ for a positive integer $n$, and the corresponding solutions are multiples of $X_n(x) = \sin(n \pi x)$. Equation~\eqref{eq:time} then gives $T_n(t) = e^{-n^2 \pi^2 t}$.
+
+\subsection{Fourier sine series}
+
+Because the heat equation is linear, any combination of the separated solutions is again a solution. We therefore seek
+\begin{equation}\label{eq:series}
+  u(x,t) = \sum_{n=1}^{\infty} b_n \, e^{-n^2 \pi^2 t} \sin(n \pi x).
+\end{equation}
+At $t = 0$ the series must reproduce the initial temperature, so the coefficients $b_n$ are the Fourier sine coefficients of $f$:
+\begin{equation}\label{eq:coefficients}
+  b_n = 2 \int_0^1 f(x) \sin(n \pi x) \, dx, \qquad n = 1, 2, \ldots
+\end{equation}
+The factor $e^{-n^2 \pi^2 t}$ shrinks rapidly with $n$, so for any $t > 0$ the series converges very quickly, and its sum is infinitely differentiable even when $f$ is merely continuous. This is the smoothing property of diffusion.
+
+\begin{theorem}\label{thm:decay}
+Let $\|g\| = \bigl(\int_0^1 g(x)^2 \, dx\bigr)^{1/2}$. If $f$ is square integrable, the solution~\eqref{eq:series} satisfies
+\begin{equation}
+  \|u(\cdot, t)\| \le e^{-\pi^2 t} \, \|f\| \qquad \text{for all } t \ge 0 .
+\end{equation}
+\end{theorem}
+
+\begin{proof}
+The functions $\sin(n\pi x)$ are orthogonal on $[0,1]$ and each has squared norm $1/2$. By Parseval's identity, $\|f\|^2 = \tfrac{1}{2} \sum_n b_n^2$ and
+\[
+  \|u(\cdot,t)\|^2 = \frac{1}{2} \sum_{n=1}^{\infty} b_n^2 \, e^{-2 n^2 \pi^2 t}
+  \le e^{-2 \pi^2 t} \, \frac{1}{2} \sum_{n=1}^{\infty} b_n^2
+  = e^{-2 \pi^2 t} \, \|f\|^2 ,
+\]
+because $n^2 \ge 1$ for every term. Taking square roots completes the proof.
+\end{proof}
+
+\begin{remark}
+Theorem~\ref{thm:decay} says that every solution decays at least as fast as its slowest mode, $\sin(\pi x)$. Modes with larger $n$ decay much faster, which is why fine-scale features of the initial temperature disappear almost immediately. A good numerical method must damp these high-frequency components as well; Section~\ref{sec:stability} shows that this requirement is exactly what limits the explicit scheme.
+\end{remark}
+
+\subsection{Two worked examples}
+
+The simplest initial temperature is a single mode, $f(x) = \sin(\pi x)$. Then $b_1 = 1$, all other coefficients vanish, and
+\begin{equation}\label{eq:exact-single}
+  u(x,t) = e^{-\pi^2 t} \sin(\pi x).
+\end{equation}
+This solution is the reference in Section~\ref{sec:experiments}. At $t = 0.1$ its amplitude has fallen to $e^{-\pi^2/10} \approx 0.373$.
+
+A more interesting example is the triangular profile
+\begin{equation}
+  f(x) =
+  \begin{cases}
+    2x, & 0 \le x \le \tfrac{1}{2}, \\[2pt]
+    2(1 - x), & \tfrac{1}{2} < x \le 1,
+  \end{cases}
+\end{equation}
+which has a corner at the midpoint. Integrating~\eqref{eq:coefficients} by parts twice gives
+\begin{equation}
+  b_n = \frac{8}{n^2 \pi^2} \sin\Bigl(\frac{n \pi}{2}\Bigr),
+\end{equation}
+so only odd modes are present and their coefficients alternate in sign. The corner is rounded off at once: after a short time the solution is dominated by the first term, $\tfrac{8}{\pi^2} e^{-\pi^2 t} \sin(\pi x)$, because the next non-zero term starts nine times smaller and decays nine times faster.
+
+\section{Finite-difference schemes}\label{sec:schemes}
+
+Exact solutions like~\eqref{eq:series} exist only for simple geometries and constant coefficients. For realistic problems we approximate the solution on a grid instead. This section introduces three classical schemes and compares their stability.
+
+\subsection{The grid}
+
+Choose a positive integer $N$ and set $h = 1/N$. The grid points are $x_j = j h$ for $j = 0, 1, \ldots, N$, and the time levels are $t^n = n \, \Delta t$. We write $u_j^n$ for the approximation to $u(x_j, t^n)$. The boundary conditions fix $u_0^n = u_N^n = 0$, and the initial condition gives $u_j^0 = f(x_j)$. A single dimensionless number controls the behaviour of all three schemes:
+\begin{equation}\label{eq:mesh-ratio}
+  r = \frac{\Delta t}{h^2} .
+\end{equation}
+
+The second derivative is replaced by the central difference
+\begin{equation}\label{eq:central}
+  u_{xx}(x_j, t) \approx \frac{u_{j-1} - 2 u_j + u_{j+1}}{h^2},
+\end{equation}
+whose error is proportional to $h^2$ when $u$ is smooth. The three schemes differ only in the time level at which this difference is evaluated. Figure~\ref{fig:stencils} shows the grid values that each scheme couples.
+
+\begin{figure}[htbp]
+  \centering
+  \setlength{\unitlength}{1mm}
+  \begin{picture}(150,36)
+    \put(8,8){\makebox(0,0)[r]{$n$}}
+    \put(8,23){\makebox(0,0)[r]{$n+1$}}
+    \multiput(15,8)(15,0){3}{\circle*{2}}
+    \put(30,23){\circle*{2}}
+    \put(15,8){\line(1,0){30}}
+    \put(30,8){\line(0,1){15}}
+    \put(30,0){\makebox(0,0){Explicit}}
+    \multiput(65,23)(15,0){3}{\circle*{2}}
+    \put(80,8){\circle*{2}}
+    \put(65,23){\line(1,0){30}}
+    \put(80,8){\line(0,1){15}}
+    \put(80,0){\makebox(0,0){Implicit}}
+    \multiput(115,8)(15,0){3}{\circle*{2}}
+    \multiput(115,23)(15,0){3}{\circle*{2}}
+    \put(115,8){\line(1,0){30}}
+    \put(115,23){\line(1,0){30}}
+    \put(130,8){\line(0,1){15}}
+    \put(130,0){\makebox(0,0){Crank--Nicolson}}
+  \end{picture}
+  \caption{Stencils of the three schemes. The lower row is time level $n$ and the upper row is level $n+1$.}
+  \label{fig:stencils}
+\end{figure}
+
+\subsection{The explicit scheme}
+
+Evaluating~\eqref{eq:central} at the old time level and replacing $u_t$ by a forward difference gives the explicit scheme, often called FTCS (forward time, centred space):
+\begin{equation}\label{eq:ftcs}
+  u_j^{n+1} = u_j^n + r \bigl( u_{j-1}^n - 2 u_j^n + u_{j+1}^n \bigr),
+  \qquad j = 1, \ldots, N-1 .
+\end{equation}
+Each new value depends only on three old values, so a time step costs a few operations per grid point and needs no linear algebra. The local truncation error is proportional to $\Delta t + h^2$: the method is first-order accurate in time and second-order accurate in space.
+
+\subsection{The implicit scheme}
+
+Evaluating~\eqref{eq:central} at the new time level gives the implicit, or backward Euler, scheme:
+\begin{equation}\label{eq:btcs}
+  -r \, u_{j-1}^{n+1} + (1 + 2r) \, u_j^{n+1} - r \, u_{j+1}^{n+1} = u_j^n,
+  \qquad j = 1, \ldots, N-1 .
+\end{equation}
+The new values are now coupled to one another, so each step requires the solution of a linear system. The matrix is tridiagonal, symmetric, and diagonally dominant, and Section~\ref{sec:implementation} shows that such a system can be solved in a number of operations proportional to $N$. The truncation error is again proportional to $\Delta t + h^2$.
+
+\subsection{The Crank--Nicolson scheme}
+
+Averaging the explicit and implicit schemes centres the approximation at $t^{n+1/2}$ and cancels the leading time error. The result is the Crank--Nicolson scheme~\cite{crank1947}:
+\begin{equation}\label{eq:cn}
+  -\frac{r}{2} u_{j-1}^{n+1} + (1 + r) \, u_j^{n+1} - \frac{r}{2} u_{j+1}^{n+1}
+  = \frac{r}{2} u_{j-1}^{n} + (1 - r) \, u_j^{n} + \frac{r}{2} u_{j+1}^{n} .
+\end{equation}
+Its truncation error is proportional to $\Delta t^2 + h^2$, so it is second-order accurate in both time and space, at essentially the same cost per step as the implicit scheme.
+
+\subsection{Stability}\label{sec:stability}
+
+A scheme is useful only if small errors, such as rounding errors, stay small as the computation proceeds. Von Neumann analysis~\cite{morton2005, strikwerda2004} tests this by following a single Fourier mode $u_j^n = G^n e^{i j \theta}$ through one step, where $\theta \in [0, \pi]$ is the dimensionless wavenumber. The \emph{amplification factor} $G(\theta)$ must satisfy $|G| \le 1$ for every mode. Appendix~\ref{app:amplification} derives
+\begin{align}
+  G_{\text{explicit}}(\theta) &= 1 - 4 r \sin^2(\theta/2), \label{eq:g-explicit} \\
+  G_{\text{implicit}}(\theta) &= \frac{1}{1 + 4 r \sin^2(\theta/2)}, \label{eq:g-implicit} \\
+  G_{\text{CN}}(\theta) &= \frac{1 - 2 r \sin^2(\theta/2)}{1 + 2 r \sin^2(\theta/2)} . \label{eq:g-cn}
+\end{align}
+
+\begin{lemma}\label{lem:explicit-stability}
+The explicit scheme~\eqref{eq:ftcs} is stable if and only if $r \le 1/2$, that is, $\Delta t \le h^2 / 2$.
+\end{lemma}
+
+\begin{proof}
+Since $0 \le \sin^2(\theta/2) \le 1$, the factor~\eqref{eq:g-explicit} never exceeds one, and it is smallest at $\theta = \pi$, where it equals $1 - 4r$. The condition $|G| \le 1$ therefore reduces to $1 - 4r \ge -1$, which is $r \le 1/2$.
+\end{proof}
+
+Both other factors satisfy $|G| \le 1$ for every $r > 0$, so the implicit and Crank--Nicolson schemes are \emph{unconditionally stable}. There is, however, an important difference between them. For a large time step the implicit factor~\eqref{eq:g-implicit} tends to zero for high-frequency modes, so those modes are damped strongly, as they are in the exact solution. The Crank--Nicolson factor~\eqref{eq:g-cn} tends to $-1$ instead: high-frequency modes change sign at every step and decay only slowly. For smooth data this hardly matters, but a discontinuous initial temperature can produce visible oscillations that persist for many steps.
+
+\begin{remark}
+The stability restriction of Lemma~\ref{lem:explicit-stability} is severe. Halving the grid spacing to gain accuracy forces the time step to shrink by a factor of four, so the total work for the explicit scheme grows like $N^3$. For the implicit schemes the time step can be chosen for accuracy alone.
+\end{remark}
+
+\section{Implementation notes}\label{sec:implementation}
+
+All three schemes update the interior values $u_1, \ldots, u_{N-1}$ once per time step. The explicit scheme is a direct loop over~\eqref{eq:ftcs}. The implicit and Crank--Nicolson schemes first form a right-hand side and then solve a tridiagonal system whose matrix has constant diagonals. The following pseudocode shows one Crank--Nicolson step:
+\begin{verbatim}
+for j = 1 .. N-1:
+    rhs[j] = u[j] + (r/2) * (u[j-1] - 2*u[j] + u[j+1])
+u = solve_tridiagonal(lower = -r/2, diagonal = 1 + r,
+                      upper = -r/2, rhs)
+\end{verbatim}
+The implicit scheme is identical except that the right-hand side is $u$ itself and the diagonals are $-r$, $1 + 2r$, and $-r$.
+
+Tridiagonal systems are solved with the Thomas algorithm~\cite{thomas1949}, which is Gaussian elimination without pivoting, specialised to three diagonals.\footnote{Pivoting is unnecessary here because the matrices are diagonally dominant, which keeps every pivot safely away from zero.} A forward sweep eliminates the sub-diagonal and a backward sweep recovers the unknowns:
+\begin{verbatim}
+def solve_tridiagonal(a, b, c, d):
+    # a, b, c: constant sub-, main, and super-diagonal
+    n = len(d)
+    cp, dp = [0.0] * n, [0.0] * n
+    cp[0], dp[0] = c / b, d[0] / b
+    for i in range(1, n):
+        m = b - a * cp[i - 1]
+        cp[i] = c / m
+        dp[i] = (d[i] - a * dp[i - 1]) / m
+    x = [0.0] * n
+    x[n - 1] = dp[n - 1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
+\end{verbatim}
+The algorithm needs about $8N$ arithmetic operations and two work arrays of length $N$, so an implicit step costs only a small constant factor more than an explicit one. The boundary values $u_0 = u_N = 0$ enter the explicit loop and the right-hand sides as fixed neighbours.
+
+\section{Numerical experiments}\label{sec:experiments}
+
+We solve~\eqref{eq:heat-scaled} with $f(x) = \sin(\pi x)$ up to $t = 0.1$ and compare each approximation with the exact solution~\eqref{eq:exact-single}. The error is measured in the maximum norm over the grid,
+\begin{equation}\label{eq:error}
+  E = \max_{1 \le j \le N-1} \bigl| u_j^{M} - u(x_j, 0.1) \bigr|,
+  \qquad M \, \Delta t = 0.1 .
+\end{equation}
+Both experiments use the grids $N = 10, 20, 40, 80$.
+
+\paragraph{Small time steps.}
+The first experiment keeps $r = 0.4$, which satisfies the stability condition of Lemma~\ref{lem:explicit-stability}, so $\Delta t = 0.4\,h^2$. Table~\ref{tab:small-step} shows the results. For all three schemes the error falls by a factor of about four each time $N$ doubles. This is second-order convergence in $h$; because $\Delta t$ is proportional to $h^2$, the first-order time error of the explicit and implicit schemes is also of order $h^2$. Crank--Nicolson has the smallest error, about 30 percent below the explicit scheme, and the implicit scheme the largest, about two and a half times the explicit error.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Maximum error at $t = 0.1$ with $r = 0.4$, so $\Delta t = 0.4\,h^2$.}
+  \label{tab:small-step}
+  \begin{tabular}{rrrrrr}
+    \hline
+    $N$ & $\Delta t$ & Steps & Explicit & Implicit & Crank--Nicolson \\
+    \hline
+    10 & \sci{4.0}{-3}  & 25   & \sci{4.29}{-3} & \sci{1.01}{-2} & \sci{2.98}{-3} \\
+    20 & \sci{1.0}{-3}  & 100  & \sci{1.06}{-3} & \sci{2.56}{-3} & \sci{7.54}{-4} \\
+    40 & \sci{2.5}{-4}  & 400  & \sci{2.65}{-4} & \sci{6.42}{-4} & \sci{1.89}{-4} \\
+    80 & \sci{6.25}{-5} & 1600 & \sci{6.62}{-5} & \sci{1.61}{-4} & \sci{4.73}{-5} \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\paragraph{Large time steps.}
+The second experiment sets $\Delta t = h$, so $r = N$ grows with the grid and the explicit scheme violates its stability condition at every resolution. Table~\ref{tab:large-step} shows the results. The implicit error falls by a factor that approaches two, which is first-order convergence in $\Delta t$. The Crank--Nicolson error still falls by a factor of four, so the scheme remains second-order accurate even though its time step is up to 200 times larger than in the first experiment.
+
+The explicit results deserve a closer look. Because the initial temperature contains only the smooth mode $\sin(\pi x)$, the unstable high-frequency modes start at the level of rounding error, about $10^{-16}$, and the three coarser grids take too few steps for them to become visible. On the finest grid the amplification factor of the highest mode is close to $1 - 4r = -319$, and after eight steps the rounding errors have grown to about $10^{4}$.
+
+\begin{table}[htbp]
+  \centering
+  \caption{Maximum error at $t = 0.1$ with $\Delta t = h$, so $r = N$.}
+  \label{tab:large-step}
+  \begin{tabular}{rrrrrr}
+    \hline
+    $N$ & $r$ & Steps & Explicit & Implicit & Crank--Nicolson \\
+    \hline
+    10 & 10 & 1 & \sci{3.52}{-1} & \sci{1.33}{-1} & \sci{2.99}{-2} \\
+    20 & 20 & 2 & \sci{1.15}{-1} & \sci{7.62}{-2} & \sci{6.88}{-3} \\
+    40 & 40 & 4 & \sci{5.05}{-2} & \sci{4.14}{-2} & \sci{1.69}{-3} \\
+    80 & 80 & 8 & \sci{8.51}{3}  & \sci{2.16}{-2} & \sci{4.20}{-4} \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\section{Discussion}\label{sec:discussion}
+
+The experiments confirm the analysis of Section~\ref{sec:schemes}, and together they suggest the following guidelines for choosing a scheme.
+\begin{itemize}
+  \item The explicit scheme is the simplest to implement and the cheapest per step. It is a good choice when the time step must be small anyway, for example to resolve a rapidly varying heat source.
+  \item The implicit scheme is the most robust. It damps high-frequency errors strongly at any time step, which makes it a safe default for rough initial data, but its first-order time error limits its accuracy.
+  \item The Crank--Nicolson scheme gives second-order accuracy in time at almost the same cost as the implicit scheme, and it is usually the most efficient method for smooth problems.
+\end{itemize}
+
+The weakness of Crank--Nicolson appears when the data are not smooth. A common remedy starts the computation with a few implicit steps, which damp the high-frequency content of the initial temperature, and then switches to Crank--Nicolson for the rest of the run. The property that makes the implicit steps effective is known as L-stability~\cite{leveque2007}. The same ideas carry over to two and three space dimensions, where the linear systems are no longer tridiagonal but can still be solved efficiently by splitting each step into one-dimensional sweeps.
+
+Several features of real heat-transfer problems were deliberately left out of this study:
+\begin{enumerate}
+  \item material properties that vary with position or temperature, which make the equation variable-coefficient or nonlinear;
+  \item internal heat sources, such as electrical heating, which add a forcing term to~\eqref{eq:heat};
+  \item Neumann and Robin boundary conditions, which require one-sided or ghost-point differences at the ends of the rod;
+  \item adaptive time stepping, which chooses $\Delta t$ from an estimate of the local error.
+\end{enumerate}
+Each of these changes the details of the schemes but not the conclusions about stability and accuracy.
+
+\section{Conclusion}\label{sec:conclusion}
+
+Starting from Fourier's law and conservation of energy, we derived the heat equation, solved it exactly with a Fourier sine series, and used that solution to measure the accuracy of three finite-difference schemes. The explicit scheme is simple but must respect the stability limit $\Delta t \le h^2/2$. The implicit scheme is stable for any time step but only first-order accurate in time. The Crank--Nicolson scheme combines unconditional stability with second-order accuracy and, for smooth problems, gives the best accuracy for a given amount of work.
+
+\appendix
+
+\section{Deriving the amplification factors}\label{app:amplification}
+
+Substitute $u_j^n = G^n e^{i j \theta}$ into each scheme and divide by $G^n e^{i j \theta}$. The neighbouring values contribute the factor
+\[
+  e^{-i\theta} - 2 + e^{i\theta} = 2\cos\theta - 2 = -4 \sin^2(\theta/2).
+\]
+For the explicit scheme~\eqref{eq:ftcs} this gives $G = 1 - 4 r \sin^2(\theta/2)$ directly. For the implicit scheme~\eqref{eq:btcs} the same factor multiplies $G$ instead:
+\[
+  G \bigl( 1 + 4 r \sin^2(\theta/2) \bigr) = 1 .
+\]
+For the Crank--Nicolson scheme~\eqref{eq:cn} half of the difference is taken at each level, so
+\[
+  G \bigl( 1 + 2 r \sin^2(\theta/2) \bigr) = 1 - 2 r \sin^2(\theta/2).
+\]
+Solving for $G$ gives~\eqref{eq:g-explicit}, \eqref{eq:g-implicit}, and~\eqref{eq:g-cn}.
+
+\section{Notation}\label{app:notation}
+
+\begin{description}
+  \item[$u(x,t)$] temperature at position $x$ and time $t$
+  \item[$k, \rho, c$] thermal conductivity, density, and specific heat capacity
+  \item[$\alpha$] thermal diffusivity, $k / (\rho c)$
+  \item[$b_n$] Fourier sine coefficient of the initial temperature
+  \item[$h, \Delta t$] grid spacing and time step
+  \item[$r$] mesh ratio $\Delta t / h^2$
+  \item[$u_j^n$] approximation to $u(x_j, t^n)$
+  \item[$G(\theta)$] amplification factor of a Fourier mode with wavenumber $\theta$
+\end{description}
+
+\begin{thebibliography}{9}
+  \bibitem{crank1947}
+  J.~Crank and P.~Nicolson.
+  A practical method for numerical evaluation of solutions of partial differential equations of the heat-conduction type.
+  \emph{Mathematical Proceedings of the Cambridge Philosophical Society}, 43(1):50--67, 1947.
+
+  \bibitem{fourier1822}
+  J.~Fourier.
+  \emph{Th\'eorie analytique de la chaleur}.
+  Firmin Didot, Paris, 1822.
+
+  \bibitem{leveque2007}
+  R.~J. LeVeque.
+  \emph{Finite Difference Methods for Ordinary and Partial Differential Equations}.
+  SIAM, Philadelphia, 2007.
+
+  \bibitem{morton2005}
+  K.~W. Morton and D.~F. Mayers.
+  \emph{Numerical Solution of Partial Differential Equations: An Introduction}.
+  Cambridge University Press, 2nd edition, 2005.
+
+  \bibitem{strikwerda2004}
+  J.~C. Strikwerda.
+  \emph{Finite Difference Schemes and Partial Differential Equations}.
+  SIAM, Philadelphia, 2nd edition, 2004.
+
+  \bibitem{thomas1949}
+  L.~H. Thomas.
+  Elliptic problems in linear difference equations over a network.
+  Technical report, Watson Scientific Computing Laboratory, Columbia University, New York, 1949.
+\end{thebibliography}
+
+\end{document}

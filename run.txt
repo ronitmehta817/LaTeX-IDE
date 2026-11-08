@@ -1,0 +1,23 @@
+# LaTeX Editor - Run Commands
+
+## Development
+```powershell
+npm install
+npx vite --config vite.config.mjs
+```
+
+## Build
+```powershell
+npm run build
+```
+
+## Preview (after build)
+```powershell
+npm run preview
+```
+
+## Installation
+```powershell
+# Install dependencies (run once)
+npm install
+```

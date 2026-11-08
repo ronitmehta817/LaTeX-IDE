@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Production build output
+dist/
+
+# Environment variables
+.env*
+*.local
+
+# IDE
+.vscode/
+.idea/
+
+# Editor temp files
+*.swp
+*.swo
+*.8su
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db

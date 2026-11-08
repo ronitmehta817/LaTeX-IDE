@@ -1,0 +1,37 @@
+{
+  "name": "latex-editor",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config vite.config.mjs",
+    "build": "tsc && vite build --config vite.config.mjs",
+    "preview": "vite preview --config vite.config.mjs"
+  },
+  "dependencies": {
+    "@codemirror/language": "^6.11.3",
+    "@codemirror/legacy-modes": "^6.5.2",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.5.2",
+    "@codemirror/view": "^6.38.6",
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@lezer/highlight": "^1.2.5",
+    "@phosphor-icons/react": "^2.1.10",
+    "@siglum/engine": "0.2.2",
+    "@uiw/react-codemirror": "^4.25.12",
+    "fflate": "^0.8.2",
+    "pdfjs-dist": "^5.4.394",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.2"
+  },
+  "overrides": {
+    "esbuild": "npm:esbuild-wasm@0.28.1"
+  }
+}
