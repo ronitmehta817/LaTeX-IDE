@@ -289,10 +289,19 @@ async function createCompilerSession(
     maxRetries: 5,
     verbose: false,
     onLog,
-    onProgress: (stage, detail) => onProgress({ stage, detail }),
+    onProgress: (stage, detail) => {
+      if (detail !== undefined && detail !== null) {
+        onProgress({ stage, detail });
+      } else if (stage) {
+        onProgress({ stage, detail: String(stage) });
+      }
+    },
   });
 
-  await compiler.init();
+  await compiler.init().catch((initError) => {
+    console.error("Siglum compiler init failed:", initError);
+    throw initError;
+  });
   const runPdfLatex: CompilerSession["compile"] = (
     source,
     mainFile,
