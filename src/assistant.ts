@@ -10,11 +10,15 @@
 
 export type AuthHeader = "bearer" | "api-key";
 
+// "default" sends no thinking parameter, so models without reasoning still work.
+export type ThinkingLevel = "default" | "low" | "medium" | "high";
+
 export type AssistantSettings = {
   baseUrl: string;
   model: string;
   apiKey: string;
   authHeader: AuthHeader;
+  thinking: ThinkingLevel;
 };
 
 export type AssistantFile =
@@ -49,6 +53,8 @@ type ToolCall = {
   id: string;
   type: "function";
   function: { name: string; arguments: string };
+  // Gemini puts a thought signature here and rejects the next request without it.
+  extra_content?: unknown;
 };
 
 export type ChatMessage =
@@ -578,6 +584,7 @@ type RawToolCall = {
   index?: number;
   id?: string;
   function?: { name?: string; arguments?: string };
+  extra_content?: unknown;
 };
 
 function mergeToolCall(calls: ToolCall[], part: RawToolCall) {
@@ -585,9 +592,18 @@ function mergeToolCall(calls: ToolCall[], part: RawToolCall) {
     typeof part.index === "number" ? part.index : part.id || calls.length === 0 ? calls.length : calls.length - 1;
   const call = (calls[index] ??= { id: "", type: "function", function: { name: "", arguments: "" } });
   if (part.id) call.id = part.id;
+  if (part.extra_content !== undefined) call.extra_content = part.extra_content;
   const name = part.function?.name;
   if (name) call.function.name = call.function.name && name !== call.function.name ? call.function.name + name : name;
   if (part.function?.arguments) call.function.arguments += part.function.arguments;
+}
+
+// OpenRouter takes the level as reasoning.effort and rejects reasoning_effort.
+function thinkingParameter(settings: AssistantSettings) {
+  if (settings.thinking === "default") return {};
+  return new URL(settings.baseUrl).hostname.endsWith("openrouter.ai")
+    ? { reasoning: { effort: settings.thinking } }
+    : { reasoning_effort: settings.thinking };
 }
 
 async function requestCompletion(
@@ -608,6 +624,7 @@ async function requestCompletion(
         tools: ASSISTANT_TOOLS,
         tool_choice: "auto",
         stream: true,
+        ...thinkingParameter(settings),
       }),
       signal,
     });
