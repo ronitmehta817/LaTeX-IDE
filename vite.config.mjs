@@ -1,6 +1,7 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
+import worker from "./worker/index.js";
 
 // NVIDIA's API sends no CORS headers, so browsers can only reach it through the app's own origin.
 const proxy = {
@@ -11,8 +12,75 @@ const proxy = {
   },
 };
 
+// Runs the Cloudflare Worker's /auth routes inside the dev and preview servers,
+// with its settings read from .env.local.
+function googleAuth() {
+  let env = {};
+  const handle = async (req, res, next) => {
+    if (!req.url?.startsWith("/auth/")) return next();
+    try {
+      const headers = new Headers();
+      for (const name of ["cookie", "origin"]) {
+        if (req.headers[name]) headers.set(name, req.headers[name]);
+      }
+      const response = await worker.fetch(
+        new Request(new URL(req.url, `http://${req.headers.host}`), {
+          method: req.method,
+          headers,
+        }),
+        env,
+      );
+      res.statusCode = response.status;
+      response.headers.forEach((value, name) => {
+        if (name !== "set-cookie") res.setHeader(name, value);
+      });
+      const cookies = response.headers.getSetCookie();
+      if (cookies.length > 0) res.setHeader("Set-Cookie", cookies);
+      res.end(Buffer.from(await response.arrayBuffer()));
+    } catch (error) {
+      next(error);
+    }
+  };
+  return {
+    name: "google-auth",
+    configResolved(config) {
+      const values = loadEnv(config.mode, config.envDir || config.root, "");
+      env = {
+        GOOGLE_CLIENT_ID: values.GOOGLE_CLIENT_ID,
+        GOOGLE_CLIENT_SECRET: values.GOOGLE_CLIENT_SECRET,
+        SESSION_SECRET: values.SESSION_SECRET,
+      };
+    },
+    configureServer(server) {
+      server.middlewares.use(handle);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(handle);
+    },
+  };
+}
+
+// Cloudflare serves public/privacy.html at /privacy; Vite only serves it with the .html.
+function privacyPage() {
+  const rewrite = (req, _res, next) => {
+    if (/^\/privacy\/?(\?|$)/.test(req.url ?? "")) {
+      req.url = req.url.replace(/^\/privacy\/?/, "/privacy.html");
+    }
+    next();
+  };
+  return {
+    name: "privacy-page",
+    configureServer(server) {
+      server.middlewares.use(rewrite);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(rewrite);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), googleAuth(), privacyPage()],
   resolve: {
     alias: {
       "blake3-wasm/browser.js": fileURLToPath(
@@ -30,14 +98,14 @@ export default defineConfig({
   server: {
     headers: {
       "Cross-Origin-Embedder-Policy": "require-corp",
-      "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+      "Cross-Origin-Opener-Policy": "same-origin",
     },
     proxy,
   },
   preview: {
     headers: {
       "Cross-Origin-Embedder-Policy": "require-corp",
-      "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+      "Cross-Origin-Opener-Policy": "same-origin",
     },
     proxy,
   },
