@@ -64,7 +64,7 @@ import { SiglumCompiler, resolveRuntime } from "@siglum/engine";
 import type { CompileResult } from "@siglum/engine/compiler";
 import workerUrl from "@siglum/engine/worker?url";
 import type { AssistantHost, AssistantProject, CompileSummary } from "./assistant";
-import AssistantPanel, { type AccountSettings } from "./AssistantPanel";
+import AssistantPanel, { readAccountSettings, type AccountSettings } from "./AssistantPanel";
 import "./styles.css";
 
 const STARTER_SOURCE = String.raw`\documentclass[11pt]{article}
@@ -189,11 +189,7 @@ const EXPLORER_HIDDEN_KEY = "latex-editor:explorer-hidden:v1";
 const ASSISTANT_OPEN_KEY = "latex-editor:assistant-open:v1";
 const DRIVE_PROJECT_KEY = "latex-editor:drive-project:v1";
 const DRIVE_DIRTY_KEY = "latex-editor:drive-dirty:v1";
-const GOOGLE_SESSION_KEY = "latex-editor:google-session:v1";
-const GOOGLE_STATE_KEY = "latex-editor:google-state:v1";
-const GOOGLE_CLIENT_ID: string = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
-const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
-const GOOGLE_SCOPES = `openid email ${DRIVE_SCOPE}`;
+const GOOGLE_RETURN_KEY = "latex-editor:google-return:v1";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
 const DRIVE_SAVE_DELAY = 3000;
@@ -392,228 +388,94 @@ class GoogleRequestError extends Error {
   }
 }
 
-interface GsiTokenResponse {
-  access_token?: string;
-  expires_in?: string | number;
-  scope?: string;
-  token_type?: string;
-  error?: string;
-  error_description?: string;
-}
+const GOOGLE_SIGN_IN_ERRORS: Record<string, string> = {
+  cancelled: "Google sign-in was cancelled.",
+  drive_permission:
+    "Google sign-in needs permission to keep this app's files in your Google Drive. Sign in again and allow it.",
+  state_mismatch: "Google sign-in could not be verified. Try signing in again.",
+  not_configured: "Google sign-in is not set up on this site.",
+};
 
-interface GsiTokenClient {
-  requestAccessToken: (overrideConfig?: { prompt?: string; login_hint?: string }) => void;
-}
-
-declare global {
-  interface Window {
-    google?: {
-      accounts?: {
-        oauth2?: {
-          initTokenClient: (config: {
-            client_id: string;
-            scope: string;
-            callback: (response: GsiTokenResponse) => void;
-            error_callback?: (error: { type: string; message: string }) => void;
-            prompt?: string;
-          }) => GsiTokenClient;
-          revoke: (token: string, done?: () => void) => void;
-        };
-      };
-    };
-  }
-}
-
-// Signs in with Google using modern Google Identity Services (GIS) token client popup,
-// with an automatic fallback to full-page redirect if GIS popup cannot open.
-function requestGoogleSignIn(options: {
-  loginHint?: string;
-  showProjects: boolean;
-  onSuccess: (session: GoogleSession, showProjects: boolean) => void;
-  onError: (error: string) => void;
-}) {
-  if (!GOOGLE_CLIENT_ID) {
-    options.onError("Google Client ID is not configured.");
-    return;
-  }
-
-  const oauth2 = window.google?.accounts?.oauth2;
-  if (oauth2?.initTokenClient) {
-    try {
-      const client = oauth2.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID,
-        scope: GOOGLE_SCOPES,
-        callback: (response: GsiTokenResponse) => {
-          if (response.error) {
-            options.onError(
-              response.error === "access_denied"
-                ? "Google sign-in was cancelled."
-                : `Google sign-in failed (${response.error_description || response.error}).`,
-            );
-            return;
-          }
-          if (!response.access_token) {
-            options.onError("No access token returned from Google.");
-            return;
-          }
-          const granted = response.scope || "";
-          if (granted && !granted.split(" ").includes(DRIVE_SCOPE)) {
-            options.onError(
-              "Google sign-in needs permission to keep this app's files in your Google Drive. Sign in again and allow it.",
-            );
-            return;
-          }
-
-          const session: GoogleSession = {
-            token: response.access_token,
-            expiresAt: Date.now() + Number(response.expires_in ?? 3600) * 1000,
-            email: "",
-          };
-          writeGoogleSession(session);
-          options.onSuccess(session, options.showProjects);
-        },
-        error_callback: (error) => {
-          if (error.type === "popup_failed_to_open" || error.type === "popup_closed") {
-            startGoogleSignInRedirect(options.loginHint, options.showProjects);
-          } else {
-            options.onError(`Google sign-in error: ${error.message || error.type}`);
-          }
-        },
-      });
-
-      client.requestAccessToken({
-        prompt: "",
-        login_hint: options.loginHint,
-      });
-      return;
-    } catch {
-      // Fall through to redirect
-    }
-  }
-
-  // Fallback to full-page redirect
-  startGoogleSignInRedirect(options.loginHint, options.showProjects);
-}
-
-function startGoogleSignInRedirect(loginHint: string | undefined, showProjects: boolean) {
-  const state = crypto.randomUUID();
+// worker/index.js runs the redirect to Google and back. The app's same-origin
+// opener policy breaks Google's popup flow.
+function startGoogleSignIn(showProjects: boolean) {
   try {
-    window.sessionStorage.setItem(GOOGLE_STATE_KEY, JSON.stringify({ state, showProjects }));
+    window.sessionStorage.setItem(GOOGLE_RETURN_KEY, showProjects ? "projects" : "editor");
   } catch {
-    // The returning state cannot be checked, so the sign-in is rejected.
+    // The Projects screen then stays closed after sign-in.
   }
-  const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: `${window.location.origin}${window.location.pathname}`,
-    response_type: "token",
-    scope: GOOGLE_SCOPES,
-    state,
-    include_granted_scopes: "true",
-  });
-  if (loginHint) params.set("login_hint", loginHint);
-  window.location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+  window.location.assign("/auth/login");
 }
 
-function completeGoogleSignIn(): { error: string | null; showProjects: boolean } {
-  const params = new URLSearchParams(window.location.hash.slice(1));
-  if (!params.has("access_token") && !params.has("error")) {
-    return { error: null, showProjects: false };
-  }
-  window.history.replaceState(
-    null,
-    "",
-    `${window.location.pathname}${window.location.search}`,
-  );
-
-  let expected: { state?: string; showProjects?: boolean } = {};
+// The Projects screen is the welcome page, except right after "Sign in again"
+// from the editor, which returns straight to the editor.
+function readGoogleSignInResult(): { error: string | null; showProjects: boolean } {
+  let showProjects = true;
   try {
-    expected = JSON.parse(window.sessionStorage.getItem(GOOGLE_STATE_KEY) ?? "{}");
-    window.sessionStorage.removeItem(GOOGLE_STATE_KEY);
+    showProjects = window.sessionStorage.getItem(GOOGLE_RETURN_KEY) !== "editor";
+    window.sessionStorage.removeItem(GOOGLE_RETURN_KEY);
   } catch {
-    expected = {};
+    showProjects = true;
   }
-  if (!expected.state || params.get("state") !== expected.state) {
-    return {
-      error: "Google sign-in could not be verified. Try signing in again.",
-      showProjects: false,
-    };
-  }
-
-  const error = params.get("error");
-  if (error) {
-    return {
-      error:
-        error === "access_denied"
-          ? "Google sign-in was cancelled."
-          : `Google sign-in failed (${error}).`,
-      showProjects: false,
-    };
-  }
-  const granted = params.get("scope");
-  if (granted && !granted.split(" ").includes(DRIVE_SCOPE)) {
-    return {
-      error:
-        "Google sign-in needs permission to keep this app's files in your Google Drive. Sign in again and allow it.",
-      showProjects: false,
-    };
-  }
-
-  writeGoogleSession({
-    token: params.get("access_token") ?? "",
-    expiresAt: Date.now() + Number(params.get("expires_in") ?? 3600) * 1000,
-    email: "",
-  });
-  return { error: null, showProjects: expected.showProjects === true };
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("google_error");
+  if (code === null) return { error: null, showProjects };
+  url.searchParams.delete("google_error");
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+  return {
+    error: GOOGLE_SIGN_IN_ERRORS[code] ?? "Google sign-in failed. Try signing in again.",
+    showProjects,
+  };
 }
 
-// Runs before React renders, so the token leaves the address bar immediately.
-const googleSignIn = GOOGLE_CLIENT_ID
-  ? completeGoogleSignIn()
-  : { error: null, showProjects: false };
+// Runs before React renders, so a reload does not repeat the message.
+const googleSignIn = readGoogleSignInResult();
 
-function readGoogleSession(): GoogleSession | null {
-  if (!GOOGLE_CLIENT_ID) return null;
-  try {
-    const session = JSON.parse(
-      window.sessionStorage.getItem(GOOGLE_SESSION_KEY) ?? "null",
-    ) as GoogleSession | null;
-    return session && typeof session.token === "string" && session.token
-      ? session
-      : null;
-  } catch {
-    return null;
+// The Worker keeps the refresh token in an HttpOnly cookie and answers with a
+// Google access token, which lasts an hour.
+async function requestGoogleSession(): Promise<
+  GoogleSession | "signed-out" | "unavailable"
+> {
+  const response = await fetch("/auth/token", { method: "POST" }).catch(() => null);
+  if (!response?.headers.get("Content-Type")?.includes("application/json")) {
+    return "unavailable";
   }
+  const body = (await response.json()) as {
+    error?: string;
+    accessToken?: string;
+    expiresIn?: number;
+    email?: string;
+  };
+  if (response.status === 401) return "signed-out";
+  if (body.error === "not_configured") return "unavailable";
+  if (!response.ok || !body.accessToken) {
+    throw new GoogleRequestError(
+      "Google sign-in is not responding. Try again in a minute.",
+      response.status,
+    );
+  }
+  return {
+    token: body.accessToken,
+    expiresAt: Date.now() + ((body.expiresIn ?? 3600) - 60) * 1000,
+    email: body.email ?? "",
+  };
 }
 
-function writeGoogleSession(session: GoogleSession | null) {
-  try {
-    if (session) {
-      window.sessionStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify(session));
-    } else {
-      window.sessionStorage.removeItem(GOOGLE_SESSION_KEY);
-    }
-  } catch {
-    // The session still applies to this page when storage is unavailable.
-  }
-}
+let googleRefresh: Promise<void> | null = null;
 
-function signOutGoogle(session: GoogleSession) {
-  try {
-    if (window.google?.accounts?.oauth2?.revoke) {
-      window.google.accounts.oauth2.revoke(session.token, () => undefined);
-    } else {
-      void fetch(
-        `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(session.token)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        },
-      ).catch(() => undefined);
-    }
-  } catch {
-    // Session is removed regardless
-  }
-  writeGoogleSession(null);
+// Updates the session in place, so every Drive call holding it uses the new token.
+function refreshGoogleSession(session: GoogleSession) {
+  googleRefresh ??= requestGoogleSession()
+    .then((next) => {
+      if (next === "signed-out") throw new GoogleExpiredError();
+      if (next === "unavailable") throw new Error("Google sign-in is not responding.");
+      session.token = next.token;
+      session.expiresAt = next.expiresAt;
+    })
+    .finally(() => {
+      googleRefresh = null;
+    });
+  return googleRefresh;
 }
 
 async function googleFetch(
@@ -621,10 +483,17 @@ async function googleFetch(
   url: string,
   init: RequestInit = {},
 ) {
-  if (session.expiresAt <= Date.now()) throw new GoogleExpiredError();
-  const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${session.token}`);
-  const response = await fetch(url, { ...init, headers });
+  if (session.expiresAt <= Date.now()) await refreshGoogleSession(session);
+  const send = () => {
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${session.token}`);
+    return fetch(url, { ...init, headers });
+  };
+  let response = await send();
+  if (response.status === 401) {
+    await refreshGoogleSession(session);
+    response = await send();
+  }
   if (response.status === 401) throw new GoogleExpiredError();
   if (!response.ok) {
     let message = `Google Drive answered with status ${response.status}.`;
@@ -637,15 +506,6 @@ async function googleFetch(
     throw new GoogleRequestError(message, response.status);
   }
   return response;
-}
-
-async function fetchGoogleEmail(session: GoogleSession) {
-  const response = await googleFetch(
-    session,
-    "https://openidconnect.googleapis.com/v1/userinfo",
-  );
-  const info = (await response.json()) as { email?: string };
-  return info.email ?? "";
 }
 
 async function listDriveFiles(session: GoogleSession, type: "project" | "settings") {
@@ -747,14 +607,11 @@ async function loadDriveSettings(session: GoogleSession): Promise<AccountSetting
   const [file] = await listDriveFiles(session, "settings");
   if (!file) return null;
   const bytes = await downloadDriveFile(session, file.id);
-  const saved = JSON.parse(new TextDecoder().decode(bytes)) as Partial<AccountSettings>;
-  return {
-    baseUrl: typeof saved.baseUrl === "string" ? saved.baseUrl : "",
-    model: typeof saved.model === "string" ? saved.model : "",
-    authHeader: saved.authHeader === "api-key" ? "api-key" : "bearer",
-    consentedHost: typeof saved.consentedHost === "string" ? saved.consentedHost : "",
-    apiKey: typeof saved.apiKey === "string" ? saved.apiKey : "",
-  };
+  try {
+    return readAccountSettings(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch {
+    return null;
+  }
 }
 
 async function saveDriveSettings(session: GoogleSession, settings: AccountSettings) {
@@ -764,7 +621,7 @@ async function saveDriveSettings(session: GoogleSession, settings: AccountSettin
     name: "assistant-settings.json",
     mimeType: "application/json",
     appProperties: { type: "settings" },
-    body: new Blob([JSON.stringify(settings)], { type: "application/json" }),
+    body: new Blob([JSON.stringify({ version: 2, ...settings })], { type: "application/json" }),
   });
 }
 
@@ -2419,25 +2276,6 @@ const PROJECTS_BACKDROP_SHADER = `
   }
 `;
 
-let filmGrainUrl = "";
-
-function filmGrain() {
-  if (filmGrainUrl) return filmGrainUrl;
-  const canvas = document.createElement("canvas");
-  canvas.width = canvas.height = 180;
-  const context = canvas.getContext("2d");
-  if (!context) return "";
-  const image = context.createImageData(180, 180);
-  for (let index = 0; index < image.data.length; index += 4) {
-    const value = Math.floor(Math.random() * 256);
-    image.data[index] = image.data[index + 1] = image.data[index + 2] = value;
-    image.data[index + 3] = 255;
-  }
-  context.putImageData(image, 0, 0);
-  filmGrainUrl = canvas.toDataURL();
-  return filmGrainUrl;
-}
-
 // Draws at no more than 60% resolution and lets CSS stretch it, which softens
 // the blobs for free. Without WebGL the canvas stays transparent over the CSS fallback.
 function startProjectsBackdrop(canvas: HTMLCanvasElement) {
@@ -2510,6 +2348,7 @@ function startProjectsBackdrop(canvas: HTMLCanvasElement) {
 }
 
 function ProjectsScreen({
+  account,
   email,
   projects,
   expired,
@@ -2526,6 +2365,7 @@ function ProjectsScreen({
   onSignOut,
   onClose,
 }: {
+  account: "checking" | "unavailable" | "signed-out" | "signed-in";
   email: string;
   projects: DriveProject[] | "loading" | null;
   expired: boolean;
@@ -2545,6 +2385,13 @@ function ProjectsScreen({
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const backdropRef = useRef<HTMLCanvasElement | null>(null);
   const [confirmId, setConfirmId] = useState("");
+  const signedIn = account === "signed-in";
+  const subtitle = {
+    checking: "Checking your Google sign-in",
+    unavailable: "Google sign-in is not set up on this site, so your project is saved in this browser only.",
+    "signed-out": "Sign in with Google to see the projects saved in your Google Drive.",
+    "signed-in": email ? `Stored in your Google Drive as ${email}` : "Stored in your Google Drive",
+  }[account];
 
   useEffect(() => {
     headingRef.current?.focus();
@@ -2567,65 +2414,62 @@ function ProjectsScreen({
       }}
     >
       <canvas ref={backdropRef} className="projects-backdrop" aria-hidden="true" />
-      <div
-        className="projects-grain"
-        aria-hidden="true"
-        style={{ backgroundImage: `url(${filmGrain()})` }}
-      />
       <div className="projects-scroll">
-        <div className="projects-inner">
+        <div className={`projects-inner${account === "signed-out" ? " signed-out" : ""}`}>
           <header className="projects-header">
             <div>
               <h2 id="projects-heading" ref={headingRef} tabIndex={-1}>
                 Your <span className="accent">projects</span>
               </h2>
-              <p>
-                {email ? `Stored in your Google Drive as ${email}` : "Stored in your Google Drive"}
-              </p>
+              <p>{subtitle}</p>
             </div>
             <div className="projects-header-actions">
               <button type="button" className="secondary-button" onClick={onClose}>
-                <CaretLeft aria-hidden="true" />
-                Back to editor
+                <PencilSimple aria-hidden="true" />
+                Open editor
               </button>
-              <button type="button" className="secondary-button" onClick={onSignOut}>
-                <SignOut aria-hidden="true" />
-                Sign out
-              </button>
+              {signedIn && (
+                <button type="button" className="secondary-button" onClick={onSignOut}>
+                  <SignOut aria-hidden="true" />
+                  Sign out
+                </button>
+              )}
             </div>
           </header>
 
-          <div className="projects-actions">
-            <button
-              type="button"
-              className="compile-button"
-              onClick={onNew}
-              disabled={busy || expired}
-            >
-              <Plus weight="bold" aria-hidden="true" />
-              <span>New project</span>
-            </button>
-            {!openProjectId && (
+          {signedIn && (
+            <div className="projects-actions">
+              <button
+                type="button"
+                className="compile-button"
+                onClick={onNew}
+                disabled={busy || expired}
+              >
+                <Plus weight="bold" aria-hidden="true" />
+                <span>New project</span>
+              </button>
+              {!openProjectId && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={onSaveCurrent}
+                  disabled={busy || expired}
+                >
+                  <CloudArrowUp aria-hidden="true" />
+                  Save “{openProjectName}” to Google Drive
+                </button>
+              )}
               <button
                 type="button"
                 className="secondary-button"
-                onClick={onSaveCurrent}
-                disabled={busy || expired}
+                onClick={onRefresh}
+                disabled={projects === "loading"}
               >
-                <CloudArrowUp aria-hidden="true" />
-                Save “{openProjectName}” to Google Drive
+                <ArrowClockwise aria-hidden="true" />
+                Refresh
               </button>
-            )}
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={onRefresh}
-              disabled={projects === "loading"}
-            >
-              <ArrowClockwise aria-hidden="true" />
-              Refresh
-            </button>
-          </div>
+            </div>
+          )}
 
           {error && (
             <p className="projects-message error" role="alert">
@@ -2634,7 +2478,16 @@ function ProjectsScreen({
             </p>
           )}
 
-          {expired ? (
+          {account === "signed-out" && (
+            <div className="projects-sign-in">
+              <button type="button" className="compile-button" onClick={onSignIn}>
+                <GoogleLogo weight="bold" aria-hidden="true" />
+                <span>Sign in with Google</span>
+              </button>
+            </div>
+          )}
+
+          {!signedIn ? null : expired ? (
             <div className="projects-message" role="alert">
               <span>Your Google sign-in expired.</span>
               <button type="button" className="secondary-button" onClick={onSignIn}>
@@ -2760,10 +2613,11 @@ export default function App() {
   );
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
   const [compileRequest, setCompileRequest] = useState(0);
-  const [googleSession, setGoogleSession] = useState(readGoogleSession);
-  const [projectsOpen, setProjectsOpen] = useState(
-    () => googleSignIn.showProjects && Boolean(readGoogleSession()),
+  const [googleStatus, setGoogleStatus] = useState<"checking" | "available" | "unavailable">(
+    "checking",
   );
+  const [googleSession, setGoogleSession] = useState<GoogleSession | null>(null);
+  const [projectsOpen, setProjectsOpen] = useState(googleSignIn.showProjects);
   const [driveProjectId, setDriveProjectId] = useState(() =>
     safeStorageRead(DRIVE_PROJECT_KEY, ""),
   );
@@ -2775,11 +2629,11 @@ export default function App() {
   const [driveState, setDriveState] = useState<
     "idle" | "saving" | "saved" | "error" | "expired"
   >("idle");
-  const [driveError, setDriveError] = useState("");
+  const [driveError, setDriveError] = useState(googleSignIn.error ?? "");
   const [driveProjects, setDriveProjects] = useState<DriveProject[] | "loading" | null>(
     "loading",
   );
-  const [accountSettings, setAccountSettings] = useState<AccountSettings | null>(null);
+  const [accountSettings, setAccountSettings] = useState<AccountSettings | null | undefined>(undefined);
 
   const editorRef = useRef<EditorView | null>(null);
   const compilerRef = useRef<CompilerSession | null>(null);
@@ -3072,7 +2926,11 @@ export default function App() {
       setDriveProjects(await listDriveProjects(googleSession));
     } catch (error) {
       setDriveProjects(null);
-      if (error instanceof GoogleExpiredError) setDriveState("expired");
+      if (error instanceof GoogleExpiredError) {
+        setDriveState("expired");
+      } else {
+        setDriveError(error instanceof Error ? error.message : "Google Drive did not respond.");
+      }
     }
   };
 
@@ -3121,6 +2979,7 @@ export default function App() {
       setDriveProjectId(target.id);
       setDriveDirty(false);
       setDriveState("saved");
+      setDriveReady(true);
       showEditor();
     });
   };
@@ -3138,6 +2997,7 @@ export default function App() {
       setDriveProjectId("");
       setDriveDirty(false);
       setDriveProjectId(await uploadProject(session, snapshot, ""));
+      setDriveReady(true);
       showEditor();
     });
   };
@@ -3149,6 +3009,7 @@ export default function App() {
         documentName: documentNameRef.current,
       };
       setDriveProjectId(await uploadProject(session, snapshot, ""));
+      setDriveReady(true);
       await refreshDriveProjects();
     });
   };
@@ -3170,19 +3031,7 @@ export default function App() {
     });
   };
 
-  const signIn = () => {
-    requestGoogleSignIn({
-      loginHint: googleSession?.email || undefined,
-      showProjects: driveState !== "expired",
-      onSuccess: (session, showProjects) => {
-        setGoogleSession(session);
-        if (showProjects) setProjectsOpen(true);
-      },
-      onError: (error) => {
-        reportError(error, "Google sign-in failed");
-      },
-    });
-  };
+  const signIn = () => startGoogleSignIn(driveState !== "expired");
 
   const signOut = async () => {
     if (!googleSession) return;
@@ -3191,14 +3040,13 @@ export default function App() {
     } catch {
       // Sign out even when the last save fails; the local copy keeps the edits.
     }
-    signOutGoogle(googleSession);
+    await fetch("/auth/logout", { method: "POST" }).catch(() => undefined);
     setGoogleSession(null);
     setDriveReady(false);
     setDriveState("idle");
     setDriveProjects("loading");
-    setAccountSettings(null);
+    setAccountSettings(undefined);
     setDriveError("");
-    closeProjects();
   };
 
   useEffect(() => {
@@ -3214,7 +3062,28 @@ export default function App() {
     if (googleSignIn.error) reportError(googleSignIn.error, "Google sign-in failed");
   }, [reportError]);
 
-  const sessionToken = googleSession?.token;
+  useEffect(() => {
+    let cancelled = false;
+    requestGoogleSession().then(
+      (result) => {
+        if (cancelled) return;
+        setGoogleStatus(result === "unavailable" ? "unavailable" : "available");
+        if (typeof result === "object") setGoogleSession(result);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        const message =
+          error instanceof Error ? error.message : "Google sign-in is not responding.";
+        setGoogleStatus("available");
+        setDriveError(message);
+        reportError(message, "Google sign-in unavailable");
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [reportError]);
+
   useEffect(() => {
     if (!googleSession) return;
     const session = googleSession;
@@ -3227,22 +3096,16 @@ export default function App() {
       }
       const message =
         error instanceof Error ? error.message : "Google Drive did not respond.";
+      setDriveState("error");
       setDriveError(message);
       reportError(message, "Google Drive unavailable");
     };
 
     void (async () => {
       try {
-        if (!session.email) {
-          const email = await fetchGoogleEmail(session);
-          if (cancelled) return;
-          const next = { ...session, email };
-          writeGoogleSession(next);
-          setGoogleSession(next);
-        }
         const settings = await loadDriveSettings(session);
         if (cancelled) return;
-        if (settings) setAccountSettings(settings);
+        setAccountSettings(settings);
       } catch (error) {
         fail(error);
         return;
@@ -3303,7 +3166,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [sessionToken]);
+  }, [googleSession]);
 
   useEffect(() => {
     if (!driveProjectId) return;
@@ -3316,10 +3179,6 @@ export default function App() {
     }
     setDriveDirty(true);
     if (!googleSession || !driveReady) return;
-    if (googleSession.expiresAt <= Date.now()) {
-      setDriveState("expired");
-      return;
-    }
     setDriveState("saving");
     const session = googleSession;
     driveTimerRef.current = window.setTimeout(() => {
@@ -3339,7 +3198,7 @@ export default function App() {
 
   useEffect(() => {
     if (projectsOpen && googleSession) void refreshDriveProjects();
-  }, [projectsOpen, sessionToken]);
+  }, [projectsOpen, googleSession]);
 
   const importProject = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -3888,8 +3747,9 @@ export default function App() {
     setExplorerWidth(clampExplorerWidth(next, container));
   };
 
-  const showProjects = projectsOpen && Boolean(googleSession);
   const googleActive = Boolean(googleSession) && driveState !== "expired";
+  // Until the linked project is downloaded, actions on the Projects screen wait.
+  const driveSyncing = Boolean(googleSession) && !driveReady && driveState === "idle";
   const driveLabel =
     driveProjectId && googleSession
       ? {
@@ -3902,7 +3762,7 @@ export default function App() {
       : "";
 
   return (
-    <div className={`app-shell${showProjects ? " projects-open" : ""}`}>
+    <div className={`app-shell${projectsOpen ? " projects-open" : ""}`}>
       <a className="skip-link" href="#source-editor">
         Skip to source
       </a>
@@ -3911,17 +3771,19 @@ export default function App() {
       </a>
 
       <header className="title-bar">
-        <div className="traffic-lights" aria-hidden="true">
-          <span />
-          <span />
-          <span />
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            T<span>e</span>X
+          </span>
+          <span>
+            LaTeX <span className="accent">Editor</span>
+          </span>
         </div>
         <div className="window-title">
-          {showProjects ? "Projects" : sanitizeFilename(documentName)} - LaTeX Editor
+          {projectsOpen ? "Projects" : sanitizeFilename(documentName)} - LaTeX Editor
         </div>
-        {GOOGLE_CLIENT_ID && !showProjects ? (
+        {googleStatus === "available" && !projectsOpen ? (
           <button
-            ref={projectsButtonRef}
             className="account-button"
             type="button"
             onClick={googleActive ? () => setProjectsOpen(true) : signIn}
@@ -3945,15 +3807,22 @@ export default function App() {
         )}
       </header>
 
-      {showProjects && googleSession && (
+      {projectsOpen && (
         <ProjectsScreen
-          email={googleSession.email}
+          account={
+            googleSession
+              ? "signed-in"
+              : googleStatus === "available"
+                ? "signed-out"
+                : googleStatus
+          }
+          email={googleSession?.email ?? ""}
           projects={driveProjects}
           expired={driveState === "expired"}
           error={driveError}
           openProjectId={driveProjectId}
           openProjectName={sanitizeFilename(documentName)}
-          busy={driveBusy || !driveReady}
+          busy={driveBusy || driveSyncing}
           onOpen={openDriveProject}
           onNew={newDriveProject}
           onSaveCurrent={saveProjectToDrive}
@@ -3966,14 +3835,16 @@ export default function App() {
       )}
 
       <div className="command-bar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            T<span>e</span>X
-          </span>
-          <span>
-            LaTeX <span className="accent">Editor</span>
-          </span>
-        </div>
+        <button
+          ref={projectsButtonRef}
+          className="toolbar-button projects-button"
+          type="button"
+          onClick={() => setProjectsOpen(true)}
+          title="All projects"
+        >
+          <CaretLeft />
+          <span>Projects</span>
+        </button>
 
         <label className="document-name">
           <span className="sr-only">Project name</span>
