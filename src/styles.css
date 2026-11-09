@@ -145,7 +145,7 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-rows: 30px 48px minmax(0, 1fr) auto 24px;
+  grid-template-rows: 38px 48px minmax(0, 1fr) auto 24px;
   width: 100%;
   height: 100dvh;
   background: var(--canvas);
@@ -153,7 +153,7 @@ button:disabled {
 
 /* The editor stays mounted under the Projects screen, so undo history, chat and the PDF survive. */
 .app-shell.projects-open {
-  grid-template-rows: 30px minmax(0, 1fr);
+  grid-template-rows: 38px minmax(0, 1fr);
 }
 
 .app-shell.projects-open > :not(.title-bar, .projects-screen) {
@@ -162,25 +162,12 @@ button:disabled {
 
 .title-bar {
   display: grid;
-  grid-template-columns: 110px 1fr 110px;
+  grid-template-columns: 160px 1fr 160px;
   align-items: center;
   border-bottom: 1px solid var(--ring);
   background: var(--canvas);
   user-select: none;
   -webkit-app-region: drag;
-}
-
-.traffic-lights {
-  display: flex;
-  gap: 8px;
-  padding-left: 14px;
-}
-
-.traffic-lights span {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: var(--ring-strong);
 }
 
 .window-title {
@@ -198,7 +185,7 @@ button:disabled {
   align-items: center;
   justify-self: end;
   gap: 6px;
-  height: 22px;
+  height: 26px;
   margin-right: 8px;
   padding: 0 10px;
   border: 0;
@@ -242,10 +229,10 @@ button:disabled {
 .brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding-right: 12px;
+  gap: 8px;
+  padding-left: 14px;
   color: var(--text-strong);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -260,10 +247,10 @@ button:disabled {
   display: inline-flex;
   align-items: baseline;
   justify-content: center;
-  min-width: 30px;
+  min-width: 28px;
   color: var(--text-strong);
   font-family: var(--serif);
-  font-size: 20px;
+  font-size: 19px;
   font-stretch: 75%;
   font-style: italic;
   font-weight: 440;
@@ -271,7 +258,7 @@ button:disabled {
 }
 
 .brand-mark span {
-  font-size: 13px;
+  font-size: 12px;
   transform: translateY(3px);
 }
 
@@ -1296,11 +1283,12 @@ button:disabled {
 }
 
 .assistant-model {
+  display: block;
   overflow: hidden;
-  max-width: 140px;
+  margin-top: 4px;
   color: var(--text-muted);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1613,12 +1601,46 @@ button:disabled {
 }
 
 .assistant-composer {
-  display: flex;
-  align-items: flex-end;
+  display: grid;
   gap: 8px;
   padding: 10px 12px;
   border-top: 1px solid var(--ring);
   background: var(--surface);
+}
+
+.assistant-picker {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.assistant-picker select {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 8px;
+  outline: 0;
+  background: var(--well);
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
+  color: var(--text);
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.assistant-picker select:first-child {
+  flex-grow: 1.6;
+}
+
+.assistant-picker select:focus {
+  box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+.assistant-input {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 .assistant-composer textarea {
@@ -1800,6 +1822,83 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.assistant-services,
+.assistant-models {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assistant-service {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px 8px 12px;
+  border-radius: 10px;
+  background: var(--chrome);
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
+}
+
+.assistant-service div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.assistant-service strong {
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.assistant-service small {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-delete-confirm {
+  color: var(--red);
+}
+
+.assistant-add-service {
+  justify-self: start;
+}
+
+.assistant-models li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 2px 2px 10px;
+  border-radius: 8px;
+  background: var(--chrome);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.assistant-models code {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-family: var(--mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-model-add {
+  display: flex;
+  gap: 6px;
+}
+
+.assistant-model-add input {
+  flex: 1;
 }
 
 .assistant-spacer {
@@ -2156,13 +2255,9 @@ button:disabled {
     var(--canvas);
 }
 
-.projects-backdrop,
-.projects-grain {
+.projects-backdrop {
   position: absolute;
   pointer-events: none;
-}
-
-.projects-backdrop {
   inset: 0;
   display: block;
   width: 100%;
@@ -2173,36 +2268,6 @@ button:disabled {
 
 .projects-backdrop[data-ready] {
   opacity: 1;
-}
-
-.projects-grain {
-  inset: -60%;
-  background-size: 180px;
-  mix-blend-mode: overlay;
-  opacity: 0.2;
-  animation: projects-grain 0.9s steps(6) infinite;
-}
-
-@keyframes projects-grain {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0);
-  }
-  17% {
-    transform: translate3d(-4%, 3%, 0);
-  }
-  33% {
-    transform: translate3d(3%, -5%, 0);
-  }
-  50% {
-    transform: translate3d(-6%, -2%, 0);
-  }
-  67% {
-    transform: translate3d(5%, 4%, 0);
-  }
-  83% {
-    transform: translate3d(-2%, 6%, 0);
-  }
 }
 
 .projects-scroll {
@@ -2225,6 +2290,19 @@ button:disabled {
   gap: 20px;
   max-width: 880px;
   margin: 0 auto;
+}
+
+.projects-inner.signed-out {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.projects-sign-in {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
 }
 
 .projects-header,
@@ -2467,8 +2545,8 @@ button:disabled {
   }
 }
 
-@media (max-width: 1050px) {
-  .brand > span:last-child,
+/* Below this width the full command bar no longer fits, so buttons drop their labels. */
+@media (max-width: 1200px) {
   .save-state {
     display: none;
   }
@@ -2487,7 +2565,7 @@ button:disabled {
 
 @media (max-width: 899px) {
   .app-shell {
-    grid-template-rows: 30px auto 36px minmax(0, 1fr) auto 24px;
+    grid-template-rows: 38px auto 36px minmax(0, 1fr) auto 24px;
   }
 
   .command-bar {
@@ -2563,26 +2641,25 @@ button:disabled {
     grid-template-columns: 72px 1fr 72px;
   }
 
-  .traffic-lights {
-    gap: 6px;
+  .brand {
     padding-left: 10px;
-  }
-
-  .traffic-lights span {
-    width: 9px;
-    height: 9px;
   }
 
   .account-button {
     padding: 0 6px;
   }
 
-  .account-button span {
+  .account-button span,
+  .brand > span:last-child {
     display: none;
   }
 
-  .brand {
-    display: none;
+  .projects-header,
+  .projects-header-actions,
+  .projects-actions,
+  .projects-message {
+    justify-content: center;
+    text-align: center;
   }
 
   .source-content {
@@ -2607,6 +2684,10 @@ button:disabled {
 
   .toolbar-button {
     display: none;
+  }
+
+  .toolbar-button.projects-button {
+    display: inline-flex;
   }
 
   .file-menu {
@@ -2663,6 +2744,9 @@ button:disabled {
   .pdf-edit-popover textarea,
   .pdf-edit-apply,
   .assistant-field :is(input, select),
+  .assistant-picker select,
+  .assistant-service,
+  .assistant-models li,
   .assistant-composer textarea,
   .assistant-send,
   .assistant-stop,
@@ -2680,10 +2764,6 @@ button:disabled {
   .projects-message,
   .pdf-search input {
     border: 1px solid ButtonText;
-  }
-
-  .traffic-lights {
-    display: none;
   }
 
   .pdf-match {
