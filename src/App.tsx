@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import CodeMirror from "@uiw/react-codemirror";
 import {
   HighlightStyle,
@@ -24,6 +25,7 @@ import type {
   RenderTask,
 } from "pdfjs-dist";
 import {
+  ArrowClockwise,
   ArrowsLeftRight,
   ArrowsOutSimple,
   CaretDown,
@@ -32,6 +34,8 @@ import {
   CaretUp,
   Check,
   CheckCircle,
+  Cloud,
+  CloudArrowUp,
   DotsThreeVertical,
   DownloadSimple,
   Export,
@@ -39,12 +43,17 @@ import {
   FilePdf,
   FileText,
   FolderOpen,
+  GoogleLogo,
   MagnifyingGlass,
   Minus,
+  PencilSimple,
   Play,
   Plus,
   SidebarSimple,
+  SignOut,
+  Sparkle,
   SpinnerGap,
+  Trash,
   Warning,
   WarningCircle,
   X,
@@ -54,6 +63,8 @@ import { strToU8, unzipSync, zipSync } from "fflate";
 import { SiglumCompiler, resolveRuntime } from "@siglum/engine";
 import type { CompileResult } from "@siglum/engine/compiler";
 import workerUrl from "@siglum/engine/worker?url";
+import type { AssistantHost, AssistantProject, CompileSummary } from "./assistant";
+import AssistantPanel, { type AccountSettings } from "./AssistantPanel";
 import "./styles.css";
 
 const STARTER_SOURCE = String.raw`\documentclass[11pt]{article}
@@ -90,45 +101,45 @@ The Gaussian integral is
 const EDITOR_THEME = [
   EditorView.theme(
     {
-      "&": { color: "#dcdee0", backgroundColor: "#2e3033" },
-      ".cm-content": { caretColor: "#ffa43c" },
-      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#ffa43c" },
+      "&": { color: "#dadbdb", backgroundColor: "#030407" },
+      ".cm-content": { caretColor: "#f2a65a" },
+      ".cm-cursor, .cm-dropCursor": { borderLeftColor: "#f2a65a" },
       "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
-        { backgroundColor: "rgb(255 164 60 / 24%)" },
-      ".cm-activeLine": { backgroundColor: "rgb(255 255 255 / 4%)" },
+        { backgroundColor: "rgb(107 61 0 / 85%)" },
+      ".cm-activeLine": { backgroundColor: "rgb(26 46 82 / 35%)" },
       ".cm-gutters": {
-        backgroundColor: "#2e3033",
-        color: "#a2a5aa",
-        borderRight: "1px solid rgb(255 255 255 / 9%)",
+        backgroundColor: "#030407",
+        color: "#85878a",
+        borderRight: "1px solid rgb(255 255 255 / 12%)",
       },
       ".cm-activeLineGutter": {
         backgroundColor: "rgb(255 255 255 / 4%)",
-        color: "#dcdee0",
+        color: "#dadbdb",
       },
       "&.cm-focused .cm-matchingBracket": {
         backgroundColor: "transparent",
-        outline: "1px solid rgb(255 164 60 / 70%)",
+        outline: "1px solid rgb(242 166 90 / 70%)",
       },
       ".cm-searchMatch": {
-        backgroundColor: "rgb(242 201 76 / 22%)",
-        outline: "1px solid rgb(242 201 76 / 50%)",
+        backgroundColor: "rgb(242 166 90 / 16%)",
+        outline: "1px solid rgb(242 166 90 / 45%)",
       },
       ".cm-searchMatch.cm-searchMatch-selected": {
-        backgroundColor: "rgb(255 164 60 / 40%)",
+        backgroundColor: "rgb(242 166 90 / 40%)",
       },
       ".cm-selectionMatch": { backgroundColor: "rgb(255 255 255 / 8%)" },
       ".cm-foldPlaceholder": {
         border: "none",
         backgroundColor: "rgb(255 255 255 / 10%)",
-        color: "#b8bbbf",
+        color: "#a8aaab",
       },
       ".cm-tooltip": {
         border: "none",
-        backgroundColor: "#35373a",
-        boxShadow: "inset 0 0 0 1px rgb(255 255 255 / 16%)",
+        backgroundColor: "#000",
+        boxShadow: "inset 0 0 0 1px rgb(255 255 255 / 28%)",
       },
       ".cm-tooltip-autocomplete > ul > li[aria-selected]": {
-        backgroundColor: "rgb(255 164 60 / 22%)",
+        backgroundColor: "#1a2e52",
         color: "#fff",
       },
     },
@@ -136,12 +147,12 @@ const EDITOR_THEME = [
   ),
   syntaxHighlighting(
     HighlightStyle.define([
-      { tag: tags.tagName, color: "#ffa43c" },
-      { tag: [tags.atom, tags.number, tags.string], color: "#f2c94c" },
-      { tag: tags.keyword, color: "#ff8257" },
-      { tag: tags.bracket, color: "#a2a5aa" },
-      { tag: tags.comment, color: "#a2a5aa", fontStyle: "italic" },
-      { tag: tags.invalid, color: "#ff9090" },
+      { tag: tags.tagName, color: "#f2a65a" },
+      { tag: [tags.atom, tags.number, tags.string], color: "#9db8e8" },
+      { tag: tags.keyword, color: "#5fd3c4" },
+      { tag: tags.bracket, color: "#85878a" },
+      { tag: tags.comment, color: "#85878a", fontStyle: "italic" },
+      { tag: tags.invalid, color: "#ff6b6b" },
     ]),
   ),
 ];
@@ -175,6 +186,17 @@ const NAME_KEY = "latex-editor:name:v1";
 const SPLIT_KEY = "latex-editor:split:v1";
 const EXPLORER_WIDTH_KEY = "latex-editor:explorer-width:v1";
 const EXPLORER_HIDDEN_KEY = "latex-editor:explorer-hidden:v1";
+const ASSISTANT_OPEN_KEY = "latex-editor:assistant-open:v1";
+const DRIVE_PROJECT_KEY = "latex-editor:drive-project:v1";
+const DRIVE_DIRTY_KEY = "latex-editor:drive-dirty:v1";
+const GOOGLE_SESSION_KEY = "latex-editor:google-session:v1";
+const GOOGLE_STATE_KEY = "latex-editor:google-state:v1";
+const GOOGLE_CLIENT_ID: string = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? "";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
+const GOOGLE_SCOPES = `openid email ${DRIVE_SCOPE}`;
+const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
+const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
+const DRIVE_SAVE_DELAY = 3000;
 const EXPLORER_DEFAULT_WIDTH = 172;
 const EXPLORER_MIN_WIDTH = 120;
 const EXPLORER_MAX_WIDTH = 480;
@@ -289,19 +311,10 @@ async function createCompilerSession(
     maxRetries: 5,
     verbose: false,
     onLog,
-    onProgress: (stage, detail) => {
-      if (detail !== undefined && detail !== null) {
-        onProgress({ stage, detail });
-      } else if (stage) {
-        onProgress({ stage, detail: String(stage) });
-      }
-    },
+    onProgress: (stage, detail) => onProgress({ stage, detail }),
   });
 
-  await compiler.init().catch((initError) => {
-    console.error("Siglum compiler init failed:", initError);
-    throw initError;
-  });
+  await compiler.init();
   const runPdfLatex: CompilerSession["compile"] = (
     source,
     mainFile,
@@ -340,6 +353,310 @@ function safeStorageRead(key: string, fallback: string) {
   } catch {
     return fallback;
   }
+}
+
+type GoogleSession = { token: string; expiresAt: number; email: string };
+
+type DriveProject = {
+  id: string;
+  name: string;
+  modifiedTime: string;
+  mainFile: string;
+  activeFile: string;
+};
+
+type DriveFile = {
+  id: string;
+  name: string;
+  modifiedTime: string;
+  appProperties?: Record<string, string>;
+};
+
+type DriveSnapshot = {
+  project: { files: ProjectFiles; activeFile: string; mainFile: string };
+  documentName: string;
+};
+
+class GoogleExpiredError extends Error {
+  constructor() {
+    super("Your Google sign-in expired. Sign in again to keep saving to Google Drive.");
+  }
+}
+
+class GoogleRequestError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
+// The app's same-origin opener policy breaks Google's popup flow, so sign-in
+// redirects the whole page and Google returns the token in the URL hash.
+function startGoogleSignIn(loginHint: string | undefined, showProjects: boolean) {
+  const state = crypto.randomUUID();
+  try {
+    window.sessionStorage.setItem(GOOGLE_STATE_KEY, JSON.stringify({ state, showProjects }));
+  } catch {
+    // The returning state cannot be checked, so the sign-in is rejected.
+  }
+  const params = new URLSearchParams({
+    client_id: GOOGLE_CLIENT_ID,
+    redirect_uri: `${window.location.origin}${window.location.pathname}`,
+    response_type: "token",
+    scope: GOOGLE_SCOPES,
+    state,
+    include_granted_scopes: "true",
+  });
+  if (loginHint) params.set("login_hint", loginHint);
+  window.location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+}
+
+function completeGoogleSignIn(): { error: string | null; showProjects: boolean } {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  if (!params.has("access_token") && !params.has("error")) {
+    return { error: null, showProjects: false };
+  }
+  window.history.replaceState(
+    null,
+    "",
+    `${window.location.pathname}${window.location.search}`,
+  );
+
+  let expected: { state?: string; showProjects?: boolean } = {};
+  try {
+    expected = JSON.parse(window.sessionStorage.getItem(GOOGLE_STATE_KEY) ?? "{}");
+    window.sessionStorage.removeItem(GOOGLE_STATE_KEY);
+  } catch {
+    expected = {};
+  }
+  if (!expected.state || params.get("state") !== expected.state) {
+    return {
+      error: "Google sign-in could not be verified. Try signing in again.",
+      showProjects: false,
+    };
+  }
+
+  const error = params.get("error");
+  if (error) {
+    return {
+      error:
+        error === "access_denied"
+          ? "Google sign-in was cancelled."
+          : `Google sign-in failed (${error}).`,
+      showProjects: false,
+    };
+  }
+  const granted = params.get("scope");
+  if (granted && !granted.split(" ").includes(DRIVE_SCOPE)) {
+    return {
+      error:
+        "Google sign-in needs permission to keep this app's files in your Google Drive. Sign in again and allow it.",
+      showProjects: false,
+    };
+  }
+
+  writeGoogleSession({
+    token: params.get("access_token") ?? "",
+    expiresAt: Date.now() + Number(params.get("expires_in") ?? 3600) * 1000,
+    email: "",
+  });
+  return { error: null, showProjects: expected.showProjects === true };
+}
+
+// Runs before React renders, so the token leaves the address bar immediately.
+const googleSignIn = GOOGLE_CLIENT_ID
+  ? completeGoogleSignIn()
+  : { error: null, showProjects: false };
+
+function readGoogleSession(): GoogleSession | null {
+  if (!GOOGLE_CLIENT_ID) return null;
+  try {
+    const session = JSON.parse(
+      window.sessionStorage.getItem(GOOGLE_SESSION_KEY) ?? "null",
+    ) as GoogleSession | null;
+    return session && typeof session.token === "string" && session.token
+      ? session
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeGoogleSession(session: GoogleSession | null) {
+  try {
+    if (session) {
+      window.sessionStorage.setItem(GOOGLE_SESSION_KEY, JSON.stringify(session));
+    } else {
+      window.sessionStorage.removeItem(GOOGLE_SESSION_KEY);
+    }
+  } catch {
+    // The session still applies to this page when storage is unavailable.
+  }
+}
+
+function signOutGoogle(session: GoogleSession) {
+  void fetch(
+    `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(session.token)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    },
+  ).catch(() => undefined);
+  writeGoogleSession(null);
+}
+
+async function googleFetch(
+  session: GoogleSession,
+  url: string,
+  init: RequestInit = {},
+) {
+  if (session.expiresAt <= Date.now()) throw new GoogleExpiredError();
+  const headers = new Headers(init.headers);
+  headers.set("Authorization", `Bearer ${session.token}`);
+  const response = await fetch(url, { ...init, headers });
+  if (response.status === 401) throw new GoogleExpiredError();
+  if (!response.ok) {
+    let message = `Google Drive answered with status ${response.status}.`;
+    try {
+      const body = (await response.json()) as { error?: { message?: string } };
+      if (body.error?.message) message = body.error.message;
+    } catch {
+      // Keep the status message.
+    }
+    throw new GoogleRequestError(message, response.status);
+  }
+  return response;
+}
+
+async function fetchGoogleEmail(session: GoogleSession) {
+  const response = await googleFetch(
+    session,
+    "https://openidconnect.googleapis.com/v1/userinfo",
+  );
+  const info = (await response.json()) as { email?: string };
+  return info.email ?? "";
+}
+
+async function listDriveFiles(session: GoogleSession, type: "project" | "settings") {
+  const params = new URLSearchParams({
+    spaces: "appDataFolder",
+    q: `appProperties has { key='type' and value='${type}' } and trashed=false`,
+    orderBy: "modifiedTime desc",
+    fields: "nextPageToken,files(id,name,modifiedTime,appProperties)",
+    pageSize: "100",
+  });
+  const files: DriveFile[] = [];
+  let pageToken = "";
+  do {
+    if (pageToken) params.set("pageToken", pageToken);
+    const response = await googleFetch(session, `${DRIVE_API}?${params}`);
+    const body = (await response.json()) as {
+      files?: DriveFile[];
+      nextPageToken?: string;
+    };
+    files.push(...(body.files ?? []));
+    pageToken = body.nextPageToken ?? "";
+  } while (pageToken);
+  return files;
+}
+
+function toDriveProject(file: DriveFile): DriveProject {
+  return {
+    id: file.id,
+    name: file.name.replace(/\.zip$/i, ""),
+    modifiedTime: file.modifiedTime,
+    mainFile: file.appProperties?.mainFile ?? "",
+    activeFile: file.appProperties?.activeFile ?? "",
+  };
+}
+
+async function listDriveProjects(session: GoogleSession) {
+  return (await listDriveFiles(session, "project")).map(toDriveProject);
+}
+
+async function getDriveProject(session: GoogleSession, id: string) {
+  const response = await googleFetch(
+    session,
+    `${DRIVE_API}/${encodeURIComponent(id)}?fields=id,name,modifiedTime,appProperties`,
+  );
+  return toDriveProject((await response.json()) as DriveFile);
+}
+
+async function downloadDriveFile(session: GoogleSession, id: string) {
+  const response = await googleFetch(
+    session,
+    `${DRIVE_API}/${encodeURIComponent(id)}?alt=media`,
+  );
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+async function uploadDriveFile(
+  session: GoogleSession,
+  file: {
+    id?: string;
+    name: string;
+    mimeType: string;
+    appProperties: Record<string, string>;
+    body: Blob;
+  },
+) {
+  const start = await googleFetch(
+    session,
+    `${DRIVE_UPLOAD_API}${file.id ? `/${encodeURIComponent(file.id)}` : ""}?uploadType=resumable&fields=id`,
+    {
+      method: file.id ? "PATCH" : "POST",
+      headers: {
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": file.mimeType,
+      },
+      body: JSON.stringify({
+        name: file.name,
+        mimeType: file.mimeType,
+        appProperties: file.appProperties,
+        ...(file.id ? {} : { parents: ["appDataFolder"] }),
+      }),
+    },
+  );
+  const location = start.headers.get("Location");
+  if (!location) throw new Error("Google Drive did not start the upload.");
+  const response = await googleFetch(session, location, {
+    method: "PUT",
+    body: file.body,
+  });
+  return ((await response.json()) as { id: string }).id;
+}
+
+async function deleteDriveFile(session: GoogleSession, id: string) {
+  await googleFetch(session, `${DRIVE_API}/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+
+async function loadDriveSettings(session: GoogleSession): Promise<AccountSettings | null> {
+  const [file] = await listDriveFiles(session, "settings");
+  if (!file) return null;
+  const bytes = await downloadDriveFile(session, file.id);
+  const saved = JSON.parse(new TextDecoder().decode(bytes)) as Partial<AccountSettings>;
+  return {
+    baseUrl: typeof saved.baseUrl === "string" ? saved.baseUrl : "",
+    model: typeof saved.model === "string" ? saved.model : "",
+    authHeader: saved.authHeader === "api-key" ? "api-key" : "bearer",
+    consentedHost: typeof saved.consentedHost === "string" ? saved.consentedHost : "",
+    apiKey: typeof saved.apiKey === "string" ? saved.apiKey : "",
+  };
+}
+
+async function saveDriveSettings(session: GoogleSession, settings: AccountSettings) {
+  const [file] = await listDriveFiles(session, "settings");
+  await uploadDriveFile(session, {
+    id: file?.id,
+    name: "assistant-settings.json",
+    mimeType: "application/json",
+    appProperties: { type: "settings" },
+    body: new Blob([JSON.stringify(settings)], { type: "application/json" }),
+  });
 }
 
 // Mirrors the min() caps on .source-content so the handle never outruns the column.
@@ -418,6 +735,72 @@ function projectByteSize(files: ProjectFiles) {
         ? encoder.encode(file.content).byteLength
         : file.content.byteLength),
     0,
+  );
+}
+
+function projectToZip(files: ProjectFiles) {
+  const archiveEntries = Object.fromEntries(
+    Object.entries(files).map(([path, file]) => [
+      path,
+      file.kind === "text" ? strToU8(file.content) : file.content,
+    ]),
+  );
+  return new Uint8Array(zipSync(archiveEntries, { level: 6 }));
+}
+
+function projectFromZip(bytes: Uint8Array) {
+  const unpacked = unzipSync(bytes);
+  const rawPaths = Object.keys(unpacked)
+    .filter((path) => !path.endsWith("/"))
+    .map(normalizeProjectPath)
+    .filter(
+      (path) =>
+        path &&
+        !path.startsWith("__MACOSX/") &&
+        !path.endsWith(".DS_Store"),
+    );
+  if (rawPaths.length === 0) {
+    throw new Error("The archive does not contain any project files.");
+  }
+  if (rawPaths.length > MAX_PROJECT_FILES) {
+    throw new Error(`Projects can contain at most ${MAX_PROJECT_FILES} files.`);
+  }
+
+  const firstSegments = rawPaths.map((path) => path.split("/")[0]);
+  const commonRoot =
+    rawPaths.every((path) => path.includes("/")) &&
+    firstSegments.every((segment) => segment === firstSegments[0])
+      ? `${firstSegments[0]}/`
+      : "";
+
+  const files: ProjectFiles = {};
+  for (const originalPath of Object.keys(unpacked)) {
+    if (originalPath.endsWith("/")) continue;
+    const normalized = normalizeProjectPath(originalPath);
+    if (
+      !normalized ||
+      normalized.startsWith("__MACOSX/") ||
+      normalized.endsWith(".DS_Store")
+    ) {
+      continue;
+    }
+    const path = commonRoot
+      ? normalized.slice(commonRoot.length)
+      : normalized;
+    if (!path) continue;
+    const fileBytes = new Uint8Array(unpacked[originalPath]);
+    files[path] = isTextPath(path)
+      ? { kind: "text", content: new TextDecoder().decode(fileBytes) }
+      : { kind: "binary", content: fileBytes };
+  }
+  return files;
+}
+
+function pickMainFile(paths: string[]) {
+  return (
+    paths.find((path) => path.toLowerCase() === "main.tex") ??
+    paths.find((path) => path.toLowerCase().endsWith("/main.tex")) ??
+    paths.find((path) => path.toLowerCase().endsWith(".tex"))
   );
 }
 
@@ -566,6 +949,186 @@ function findSyncTexSource(
     if (target) return { file: target.file, line: target.line };
   }
   return null;
+}
+
+type SourceTextMatch = {
+  start: number;
+  end: number;
+  line: number;
+  source: string;
+  // The visible text, one entry per character, with each character's span in
+  // the source. Spaces stand for any run of source whitespace or `~`.
+  chars: string[];
+  spans: { start: number; end: number }[];
+};
+
+type PdfTextSelection = {
+  page: number;
+  text: string;
+  // PDF points from the top-left corner of the page, as SyncTeX uses.
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+};
+
+type PdfTextEdit =
+  | {
+      kind: "ready";
+      location: string;
+      text: string;
+      apply: (replacement: string) => boolean;
+    }
+  | { kind: "unavailable"; message: string; reveal?: () => void };
+
+const MAX_EDIT_CHARS = 400;
+const EDIT_MATCH_WINDOW = 40;
+
+// Characters TeX typesets from ASCII ligatures in the source.
+const PDF_CHAR_SOURCES: Record<string, string> = {
+  "“": "``|“|\"",
+  "”": "''|”|\"",
+  "‘": "`|‘",
+  "’": "'|’",
+  "–": "--|–",
+  "—": "---|—",
+};
+
+const LATEX_TEXT_ESCAPES: Record<string, string> = {
+  "\\": "\\textbackslash{}",
+  "{": "\\{",
+  "}": "\\}",
+  $: "\\$",
+  "&": "\\&",
+  "#": "\\#",
+  "%": "\\%",
+  _: "\\_",
+  "~": "\\textasciitilde{}",
+  "^": "\\textasciicircum{}",
+};
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function escapeLatexText(text: string) {
+  return text.replace(/[\\{}$&#%_~^]/g, (char) => LATEX_TEXT_ESCAPES[char]);
+}
+
+function findTextInSource(
+  source: string,
+  selected: string,
+  nearLine: number,
+): SourceTextMatch | "too-long" | null {
+  const characters = [...selected.normalize("NFKC")];
+  const tokens: { char: string; optional: boolean }[] = [];
+  characters.forEach((char, index) => {
+    if (/\s/u.test(char)) return;
+    const hyphen = char === "-" || char === "\u2010";
+    // A hyphen before a line break may be one TeX added to split the word.
+    const optional =
+      hyphen &&
+      /\s/u.test(characters[index + 1] ?? "") &&
+      /\p{L}/u.test(tokens.at(-1)?.char ?? "");
+    tokens.push({ char: hyphen ? "-" : char, optional });
+  });
+  if (tokens.length === 0) return null;
+  if (tokens.length > MAX_EDIT_CHARS) return "too-long";
+
+  const pattern = tokens
+    .map(
+      ({ char, optional }) =>
+        `(${optional ? "-?" : (PDF_CHAR_SOURCES[char] ?? escapeRegExp(char))})`,
+    )
+    .join("([\\s~]*)");
+  const regex = new RegExp(pattern, "gd");
+  const lineStarts = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === "\n") lineStarts.push(index + 1);
+  }
+  const lineAt = (offset: number) => {
+    let low = 0;
+    let high = lineStarts.length - 1;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (lineStarts[middle] <= offset) low = middle;
+      else high = middle - 1;
+    }
+    return low + 1;
+  };
+
+  let best: RegExpExecArray | null = null;
+  let bestDistance = Infinity;
+  for (let match = regex.exec(source); match; match = regex.exec(source)) {
+    if (match[0].length === 0) {
+      regex.lastIndex += 1;
+      continue;
+    }
+    const distance = Math.abs(lineAt(match.index) - nearLine);
+    if (distance < bestDistance) {
+      best = match;
+      bestDistance = distance;
+    }
+  }
+  if (!best?.indices || bestDistance > EDIT_MATCH_WINDOW) return null;
+  const indices = best.indices;
+
+  const chars: string[] = [];
+  const spans: SourceTextMatch["spans"] = [];
+  tokens.forEach(({ char }, index) => {
+    const [start, end] = indices[1 + index * 2];
+    if (end > start) {
+      chars.push(char);
+      spans.push({ start, end });
+    }
+    const gap = indices[2 + index * 2];
+    if (index < tokens.length - 1 && gap && gap[1] > gap[0]) {
+      chars.push(" ");
+      spans.push({ start: gap[0], end: gap[1] });
+    }
+  });
+  const start = best.index;
+  const end = start + best[0].length;
+  return {
+    start,
+    end,
+    line: lineAt(start),
+    source: source.slice(start, end),
+    chars,
+    spans,
+  };
+}
+
+// Rewrites only the characters that changed, so the unchanged parts keep
+// their original LaTeX spelling (``quotes'', --, ~ and line breaks).
+function planTextReplacement(match: SourceTextMatch, replacement: string) {
+  const previous = match.chars;
+  const next = [...replacement.replace(/\s*\n\s*/g, " ")];
+  if (previous.join("") === next.join("")) return null;
+  let prefix = 0;
+  while (
+    prefix < previous.length &&
+    prefix < next.length &&
+    previous[prefix] === next[prefix]
+  ) {
+    prefix += 1;
+  }
+  let suffix = 0;
+  while (
+    suffix < previous.length - prefix &&
+    suffix < next.length - prefix &&
+    previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+  const from = prefix === 0 ? match.spans[0].start : match.spans[prefix - 1].end;
+  const to =
+    suffix === 0
+      ? match.spans[previous.length - 1].end
+      : match.spans[previous.length - suffix].start;
+  return {
+    from,
+    to,
+    insert: escapeLatexText(next.slice(prefix, next.length - suffix).join("")),
+  };
 }
 
 function foldSearchChar(char: string) {
@@ -743,10 +1306,25 @@ function PdfPageCanvas({
   onError,
 }: PdfPageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const textLayerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const layer = textLayerRef.current;
+    if (!layer) return;
+    const startSelecting = () => layer.classList.add("selecting");
+    const stopSelecting = () => layer.classList.remove("selecting");
+    layer.addEventListener("pointerdown", startSelecting);
+    document.addEventListener("pointerup", stopSelecting);
+    return () => {
+      layer.removeEventListener("pointerdown", startSelecting);
+      document.removeEventListener("pointerup", stopSelecting);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     let renderTask: RenderTask | null = null;
+    let textLayer: { cancel: () => void } | null = null;
 
     async function renderPage() {
       const pdfPage = await pdfDocument.getPage(pageNumber);
@@ -765,6 +1343,23 @@ function PdfPageCanvas({
           pixelRatio === 1 ? undefined : [pixelRatio, 0, 0, pixelRatio, 0, 0],
       });
       await renderTask.promise;
+
+      const container = textLayerRef.current;
+      if (cancelled || !container) return;
+      const { TextLayer } = await import("pdfjs-dist");
+      if (cancelled) return;
+      container.replaceChildren();
+      const layer = new TextLayer({
+        textContentSource: pdfPage.streamTextContent(),
+        container,
+        viewport,
+      });
+      textLayer = layer;
+      await layer.render();
+      if (cancelled) return;
+      const endOfContent = document.createElement("div");
+      endOfContent.className = "endOfContent";
+      container.append(endOfContent);
     }
 
     renderPage().catch((error: unknown) => {
@@ -782,11 +1377,15 @@ function PdfPageCanvas({
     return () => {
       cancelled = true;
       renderTask?.cancel();
+      textLayer?.cancel();
     };
   }, [onError, pageNumber, pdfDocument, scale]);
 
   return (
-    <canvas ref={canvasRef} aria-label={`PDF page ${pageNumber} of ${pageCount}`} />
+    <>
+      <canvas ref={canvasRef} aria-label={`PDF page ${pageNumber} of ${pageCount}`} />
+      <div ref={textLayerRef} className="textLayer" />
+    </>
   );
 }
 
@@ -797,6 +1396,7 @@ type PdfPreviewProps = {
   onDownload: () => void;
   // x and y are PDF points measured from the top-left corner of the page.
   onLocateSource?: (page: number, x: number, y: number) => void;
+  onPrepareEdit?: (selection: PdfTextSelection) => PdfTextEdit;
 };
 
 function PdfPreview({
@@ -805,8 +1405,27 @@ function PdfPreview({
   busy,
   onDownload,
   onLocateSource,
+  onPrepareEdit,
 }: PdfPreviewProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
+  const editPopoverRef = useRef<HTMLDivElement>(null);
+  // Positions are in the viewport's scrolled content, so they move with the
+  // page. `top` sits below the selection and `above` is its top edge.
+  const [selectionChip, setSelectionChip] = useState<{
+    selection: PdfTextSelection;
+    left: number;
+    top: number;
+    above: number;
+  } | null>(null);
+  const [textEdit, setTextEdit] = useState<{
+    edit: PdfTextEdit;
+    left: number;
+    top: number;
+    above: number;
+    error: string;
+  } | null>(null);
+  const [editValue, setEditValue] = useState("");
   const pageElementsRef = useRef<(HTMLDivElement | null)[]>([]);
   // The page at the top of the view, how far into it the view starts, and the
   // horizontal centre, so zooming and recompiling keep the reading position.
@@ -1148,6 +1767,136 @@ function PdfPreview({
       .catch(() => undefined);
   };
 
+  useEffect(() => {
+    setSelectionChip(null);
+    setTextEdit(null);
+  }, [containerWidth, pdfDocument, scale]);
+
+  const textEditReady = textEdit?.edit.kind === "ready";
+  useEffect(() => {
+    if (!textEditReady) return;
+    editInputRef.current?.focus({ preventScroll: true });
+    editInputRef.current?.select();
+  }, [textEditReady]);
+
+  // Open above the selection when there is no room below it.
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const popover = editPopoverRef.current;
+    if (!textEdit || !viewport || !popover) return;
+    const height = popover.offsetHeight;
+    const visibleBottom = viewport.scrollTop + viewport.clientHeight - 8;
+    if (textEdit.top + height <= visibleBottom) return;
+    const flipped = textEdit.above - height;
+    if (flipped >= viewport.scrollTop + 8) {
+      setTextEdit({ ...textEdit, top: flipped });
+    } else {
+      viewport.scrollTop += textEdit.top + height - visibleBottom;
+    }
+  }, [textEdit]);
+
+  const pageOf = (node: Node) =>
+    (node instanceof Element ? node : node.parentElement)
+      ?.closest(".textLayer")
+      ?.closest<HTMLDivElement>(".pdf-page") ?? null;
+
+  const captureSelection = (event: React.MouseEvent<HTMLDivElement>) => {
+    const viewport = viewportRef.current;
+    if (!onPrepareEdit || !viewport) return;
+    if ((event.target as Element).closest(".pdf-edit")) return;
+    // A double-click selects a word too, but it keeps meaning "go to source".
+    if (event.detail > 1) {
+      setSelectionChip(null);
+      return;
+    }
+    const selection = window.getSelection();
+    const range =
+      selection && selection.rangeCount > 0 && !selection.isCollapsed
+        ? selection.getRangeAt(0)
+        : null;
+    const text = selection?.toString() ?? "";
+    const pageElement = range ? pageOf(range.startContainer) : null;
+    const rects = range
+      ? [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0)
+      : [];
+    const pageNumber = pageElement ? pageElementsRef.current.indexOf(pageElement) + 1 : 0;
+    if (
+      !range ||
+      !pageElement ||
+      pageOf(range.endContainer) !== pageElement ||
+      !text.trim() ||
+      rects.length === 0 ||
+      pageNumber < 1
+    ) {
+      setSelectionChip(null);
+      setTextEdit(null);
+      return;
+    }
+
+    const pageBounds = pageElement.getBoundingClientRect();
+    const viewBounds = viewport.getBoundingClientRect();
+    const first = rects[0];
+    const last = rects[rects.length - 1];
+    const toPage = (clientX: number, clientY: number) => ({
+      x: (clientX - pageBounds.left) / scale,
+      y: (clientY - pageBounds.top) / scale,
+    });
+    setTextEdit(null);
+    setSelectionChip({
+      selection: {
+        page: pageNumber,
+        text,
+        start: toPage(first.left + 1, first.top + first.height / 2),
+        end: toPage(last.right - 1, last.top + last.height / 2),
+      },
+      left: Math.min(
+        last.right - viewBounds.left + viewport.scrollLeft,
+        viewport.scrollLeft + viewport.clientWidth - 128,
+      ),
+      top: last.bottom - viewBounds.top + viewport.scrollTop + 6,
+      above: first.top - viewBounds.top + viewport.scrollTop - 6,
+    });
+  };
+
+  const openTextEdit = () => {
+    const viewport = viewportRef.current;
+    if (!selectionChip || !onPrepareEdit || !viewport) return;
+    const edit = onPrepareEdit(selectionChip.selection);
+    setTextEdit({
+      edit,
+      left: Math.max(
+        viewport.scrollLeft + 8,
+        Math.min(
+          selectionChip.left - 160,
+          viewport.scrollLeft + viewport.clientWidth - 336,
+        ),
+      ),
+      top: selectionChip.top,
+      above: selectionChip.above,
+      error: "",
+    });
+    setEditValue(edit.kind === "ready" ? edit.text : "");
+    setSelectionChip(null);
+  };
+
+  const closeTextEdit = () => {
+    setTextEdit(null);
+    viewportRef.current?.focus({ preventScroll: true });
+  };
+
+  const submitTextEdit = () => {
+    if (textEdit?.edit.kind !== "ready") return;
+    if (!textEdit.edit.apply(editValue)) {
+      setTextEdit({
+        ...textEdit,
+        error: "The source changed while this was open. Select the text again.",
+      });
+      return;
+    }
+    window.getSelection()?.removeAllRanges();
+    closeTextEdit();
+  };
+
   return (
     <section
       className="pane preview-pane"
@@ -1310,6 +2059,7 @@ function PdfPreview({
         ref={viewportRef}
         tabIndex={0}
         onScroll={updateVisiblePages}
+        onMouseUp={captureSelection}
       >
         {!bytes && !busy && (
           <div className="empty-state">
@@ -1360,10 +2110,13 @@ function PdfPreview({
                   pageElementsRef.current[index] = element;
                 }}
                 className="pdf-page"
-                style={{
-                  width: Math.floor(size.width * scale),
-                  height: Math.floor(size.height * scale),
-                }}
+                style={
+                  {
+                    width: Math.floor(size.width * scale),
+                    height: Math.floor(size.height * scale),
+                    "--total-scale-factor": scale,
+                  } as React.CSSProperties
+                }
                 onDoubleClick={(event) => handleDoubleClick(event, pageNumber)}
               >
                 {rendered && (
@@ -1390,6 +2143,464 @@ function PdfPreview({
               </div>
             );
           })}
+
+        {selectionChip && (
+          <button
+            type="button"
+            className="pdf-edit pdf-edit-chip"
+            style={{ left: selectionChip.left, top: selectionChip.top }}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={openTextEdit}
+          >
+            <PencilSimple aria-hidden="true" />
+            Edit text
+          </button>
+        )}
+
+        {textEdit && (
+          <div
+            ref={editPopoverRef}
+            className="pdf-edit pdf-edit-popover"
+            role="dialog"
+            aria-labelledby="pdf-edit-title"
+            style={{ left: textEdit.left, top: textEdit.top }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                closeTextEdit();
+              }
+            }}
+          >
+            <div className="pdf-edit-heading">
+              <span id="pdf-edit-title">Edit text</span>
+              {textEdit.edit.kind === "ready" && <code>{textEdit.edit.location}</code>}
+            </div>
+            {textEdit.edit.kind === "ready" ? (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  submitTextEdit();
+                }}
+              >
+                <textarea
+                  ref={editInputRef}
+                  value={editValue}
+                  rows={3}
+                  aria-label="Replacement text"
+                  onChange={(event) => setEditValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      submitTextEdit();
+                    }
+                  }}
+                />
+                {textEdit.error && (
+                  <p className="pdf-edit-message" role="alert">
+                    {textEdit.error}
+                  </p>
+                )}
+                <div className="pdf-edit-actions">
+                  <span className="pdf-edit-hint">Enter to replace</span>
+                  <button type="button" className="secondary-button" onClick={closeTextEdit}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="pdf-edit-apply">
+                    Replace
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <>
+                <p className="pdf-edit-message" role="alert">
+                  {textEdit.edit.message}
+                </p>
+                <div className="pdf-edit-actions">
+                  {textEdit.edit.reveal && (
+                    <button
+                      type="button"
+                      className="pdf-edit-apply"
+                      onClick={() => {
+                        if (textEdit.edit.kind === "unavailable") textEdit.edit.reveal?.();
+                        setTextEdit(null);
+                      }}
+                    >
+                      Go to source
+                    </button>
+                  )}
+                  <button type="button" className="secondary-button" onClick={closeTextEdit}>
+                    Close
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+const PROJECT_DATE_FORMAT = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
+// The "play" palette from the designer portfolio: Gaussian colour blobs warped
+// by simplex noise, blended as weighted averages so they mix like wet paint.
+const PROJECTS_BACKDROP_SHADER = `
+  #ifdef GL_FRAGMENT_PRECISION_HIGH
+  precision highp float;
+  #else
+  precision mediump float;
+  #endif
+  varying vec2 uv;
+  uniform vec2 res;
+  uniform float time;
+  vec3 perm(vec3 x) { return mod(((x * 34.0) + 1.0) * x, 289.0); }
+  float snoise(vec2 v) {
+    const vec4 C = vec4(0.211324865405187, 0.366025403784439, -0.577350269189626, 0.024390243902439);
+    vec2 i = floor(v + dot(v, C.yy));
+    vec2 x0 = v - i + dot(i, C.xx);
+    vec2 i1 = (x0.x > x0.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+    vec4 x12 = x0.xyxy + C.xxzz;
+    x12.xy -= i1;
+    i = mod(i, 289.0);
+    vec3 p = perm(perm(i.y + vec3(0.0, i1.y, 1.0)) + i.x + vec3(0.0, i1.x, 1.0));
+    vec3 m = max(0.5 - vec3(dot(x0, x0), dot(x12.xy, x12.xy), dot(x12.zw, x12.zw)), 0.0);
+    m = m * m; m = m * m;
+    vec3 x = 2.0 * fract(p * C.www) - 1.0;
+    vec3 h = abs(x) - 0.5;
+    vec3 ox = floor(x + 0.5);
+    vec3 a0 = x - ox;
+    m *= 1.79284291400159 - 0.85373472095314 * (a0 * a0 + h * h);
+    vec3 g;
+    g.x = a0.x * x0.x + h.x * x0.y;
+    g.yz = a0.yz * x12.xz + h.yz * x12.yw;
+    return 130.0 * dot(m, g);
+  }
+  float blob(vec2 p, vec2 c, float r) { vec2 d = p - c; return exp(-dot(d, d) / (r * r)); }
+  vec3 acc; float tot;
+  void add(vec3 c, vec2 w, vec2 at, float r, float k) { float b = blob(w, at, r) * k; acc += c * b; tot += b; }
+  void main() {
+    float a = res.x / res.y;
+    vec2 p = vec2(uv.x * a, 1.0 - uv.y);
+    float t = time;
+    vec2 w = p + 0.10 * vec2(snoise(p * 1.7 + vec2(t * 0.06, 1.3)), snoise(p * 1.7 + vec2(-2.1, t * 0.05)));
+    acc = vec3(0.0); tot = 0.35;
+    add(vec3(0.03, 0.60, 0.57), w, vec2((0.80 + 0.05 * sin(t * 0.12)) * a, 0.12 + 0.04 * cos(t * 0.10)), 0.30, 3.0);
+    add(vec3(0.05, 0.66, 0.62), w, vec2((0.98 + 0.04 * sin(t * 0.08)) * a, 0.26), 0.18, 1.8);
+    add(vec3(0.02, 0.42, 0.42), w, vec2((0.57 + 0.04 * cos(t * 0.09)) * a, 0.22), 0.14, 1.6);
+    add(vec3(0.31, 0.01, 0.21), w, vec2((0.16 + 0.04 * sin(t * 0.08)) * a, 0.24 + 0.05 * sin(t * 0.11)), 0.22, 2.0);
+    add(vec3(0.77, 0.58, 0.10), w, vec2((-0.02 + 0.03 * sin(t * 0.10)) * a, 0.52 + 0.06 * cos(t * 0.07)), 0.22, 2.4);
+    add(vec3(0.47, 0.38, 0.02), w, vec2(0.06 * a, 0.95), 0.20, 1.6);
+    add(vec3(0.58, 0.40, 0.66), w, vec2((0.30 + 0.04 * sin(t * 0.13)) * a, 0.80), 0.11, 1.2);
+    add(vec3(0.85, 0.70, 0.56), w, vec2(0.13 * a, 0.66), 0.07, 0.8);
+    add(vec3(0.83, 0.24, 0.07), w, vec2((0.70 + 0.06 * sin(t * 0.09)) * a, 1.05), 0.26, 3.2);
+    add(vec3(0.84, 0.22, 0.10), w, vec2((0.96 + 0.03 * cos(t * 0.11)) * a, 0.98), 0.18, 2.2);
+    add(vec3(0.86, 0.44, 0.11), w, vec2(0.46 * a, 1.0), 0.15, 2.0);
+    vec3 col = acc / tot;
+    col += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+    gl_FragColor = vec4(col, 1.0);
+  }
+`;
+
+let filmGrainUrl = "";
+
+function filmGrain() {
+  if (filmGrainUrl) return filmGrainUrl;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 180;
+  const context = canvas.getContext("2d");
+  if (!context) return "";
+  const image = context.createImageData(180, 180);
+  for (let index = 0; index < image.data.length; index += 4) {
+    const value = Math.floor(Math.random() * 256);
+    image.data[index] = image.data[index + 1] = image.data[index + 2] = value;
+    image.data[index + 3] = 255;
+  }
+  context.putImageData(image, 0, 0);
+  filmGrainUrl = canvas.toDataURL();
+  return filmGrainUrl;
+}
+
+// Draws at no more than 60% resolution and lets CSS stretch it, which softens
+// the blobs for free. Without WebGL the canvas stays transparent over the CSS fallback.
+function startProjectsBackdrop(canvas: HTMLCanvasElement) {
+  const gl = canvas.getContext("webgl", {
+    antialias: false,
+    depth: false,
+    stencil: false,
+    alpha: false,
+    powerPreference: "low-power",
+  });
+  if (!gl) return () => undefined;
+
+  const program = gl.createProgram();
+  const buffer = gl.createBuffer();
+  const compile = (type: number, source: string) => {
+    const shader = gl.createShader(type);
+    if (!shader) return false;
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    gl.attachShader(program, shader);
+    return gl.getShaderParameter(shader, gl.COMPILE_STATUS) as boolean;
+  };
+  if (
+    !compile(
+      gl.VERTEX_SHADER,
+      "attribute vec2 p; varying vec2 uv; void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }",
+    ) ||
+    !compile(gl.FRAGMENT_SHADER, PROJECTS_BACKDROP_SHADER)
+  ) {
+    return () => undefined;
+  }
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) return () => undefined;
+  gl.useProgram(program);
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+  const position = gl.getAttribLocation(program, "p");
+  gl.enableVertexAttribArray(position);
+  gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+  const resolution = gl.getUniformLocation(program, "res");
+  const time = gl.getUniformLocation(program, "time");
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const startedAt = performance.now();
+  let frame = 0;
+  const draw = (now: number) => {
+    gl.uniform1f(time, reduceMotion ? 6 : ((now - startedAt) / 1000) * 2.2);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    canvas.dataset.ready = "";
+    if (!reduceMotion) frame = requestAnimationFrame(draw);
+  };
+  const resize = () => {
+    const scale = Math.min(0.6, 1100 / Math.max(window.innerWidth, 1));
+    canvas.width = Math.max(2, Math.round(canvas.clientWidth * scale));
+    canvas.height = Math.max(2, Math.round(canvas.clientHeight * scale));
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform2f(resolution, canvas.width, canvas.height);
+    if (reduceMotion) draw(performance.now());
+  };
+  resize();
+  window.addEventListener("resize", resize);
+  if (!reduceMotion) frame = requestAnimationFrame(draw);
+
+  return () => {
+    cancelAnimationFrame(frame);
+    window.removeEventListener("resize", resize);
+    gl.deleteBuffer(buffer);
+    gl.deleteProgram(program);
+  };
+}
+
+function ProjectsScreen({
+  email,
+  projects,
+  expired,
+  error,
+  openProjectId,
+  openProjectName,
+  busy,
+  onOpen,
+  onNew,
+  onSaveCurrent,
+  onDelete,
+  onRefresh,
+  onSignIn,
+  onSignOut,
+  onClose,
+}: {
+  email: string;
+  projects: DriveProject[] | "loading" | null;
+  expired: boolean;
+  error: string;
+  openProjectId: string;
+  openProjectName: string;
+  busy: boolean;
+  onOpen: (project: DriveProject) => void;
+  onNew: () => void;
+  onSaveCurrent: () => void;
+  onDelete: (project: DriveProject) => void;
+  onRefresh: () => void;
+  onSignIn: () => void;
+  onSignOut: () => void;
+  onClose: () => void;
+}) {
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const backdropRef = useRef<HTMLCanvasElement | null>(null);
+  const [confirmId, setConfirmId] = useState("");
+
+  useEffect(() => {
+    headingRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const canvas = backdropRef.current;
+    return canvas ? startProjectsBackdrop(canvas) : undefined;
+  }, []);
+
+  return (
+    <section
+      className="projects-screen"
+      aria-labelledby="projects-heading"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        if (confirmId) setConfirmId("");
+        else onClose();
+      }}
+    >
+      <canvas ref={backdropRef} className="projects-backdrop" aria-hidden="true" />
+      <div
+        className="projects-grain"
+        aria-hidden="true"
+        style={{ backgroundImage: `url(${filmGrain()})` }}
+      />
+      <div className="projects-scroll">
+        <div className="projects-inner">
+          <header className="projects-header">
+            <div>
+              <h2 id="projects-heading" ref={headingRef} tabIndex={-1}>
+                Your <span className="accent">projects</span>
+              </h2>
+              <p>
+                {email ? `Stored in your Google Drive as ${email}` : "Stored in your Google Drive"}
+              </p>
+            </div>
+            <div className="projects-header-actions">
+              <button type="button" className="secondary-button" onClick={onClose}>
+                <CaretLeft aria-hidden="true" />
+                Back to editor
+              </button>
+              <button type="button" className="secondary-button" onClick={onSignOut}>
+                <SignOut aria-hidden="true" />
+                Sign out
+              </button>
+            </div>
+          </header>
+
+          <div className="projects-actions">
+            <button
+              type="button"
+              className="compile-button"
+              onClick={onNew}
+              disabled={busy || expired}
+            >
+              <Plus weight="bold" aria-hidden="true" />
+              <span>New project</span>
+            </button>
+            {!openProjectId && (
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onSaveCurrent}
+                disabled={busy || expired}
+              >
+                <CloudArrowUp aria-hidden="true" />
+                Save “{openProjectName}” to Google Drive
+              </button>
+            )}
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={onRefresh}
+              disabled={projects === "loading"}
+            >
+              <ArrowClockwise aria-hidden="true" />
+              Refresh
+            </button>
+          </div>
+
+          {error && (
+            <p className="projects-message error" role="alert">
+              <WarningCircle weight="fill" aria-hidden="true" />
+              {error}
+            </p>
+          )}
+
+          {expired ? (
+            <div className="projects-message" role="alert">
+              <span>Your Google sign-in expired.</span>
+              <button type="button" className="secondary-button" onClick={onSignIn}>
+                <GoogleLogo aria-hidden="true" />
+                Sign in again
+              </button>
+            </div>
+          ) : projects === "loading" ? (
+            <p className="projects-message">
+              <SpinnerGap className="spin" aria-hidden="true" />
+              Loading your projects from Google Drive
+            </p>
+          ) : projects === null ? (
+            <div className="projects-message">
+              <span>Could not load your projects.</span>
+              <button type="button" className="secondary-button" onClick={onRefresh}>
+                Try again
+              </button>
+            </div>
+          ) : projects.length === 0 ? (
+            <p className="projects-message">
+              No projects in Google Drive yet. Create one, or save the project you have open.
+            </p>
+          ) : (
+            <ul className="projects-list">
+              {projects.map((item) => {
+                const current = item.id === openProjectId;
+                return (
+                  <li key={item.id} className={`projects-item${current ? " current" : ""}`}>
+                    <button
+                      type="button"
+                      className="projects-item-open"
+                      disabled={busy}
+                      onClick={() => onOpen(item)}
+                    >
+                      <Cloud aria-hidden="true" />
+                      <span>
+                        <strong>{item.name}</strong>
+                        <small>
+                          {current ? "Open now · " : ""}Edited{" "}
+                          {PROJECT_DATE_FORMAT.format(new Date(item.modifiedTime))}
+                        </small>
+                      </span>
+                    </button>
+                    {confirmId === item.id ? (
+                      <button
+                        type="button"
+                        className="secondary-button projects-delete-confirm"
+                        disabled={busy}
+                        autoFocus
+                        onClick={() => {
+                          setConfirmId("");
+                          onDelete(item);
+                        }}
+                      >
+                        Confirm delete
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="icon-button"
+                        disabled={busy}
+                        aria-label={`Delete ${item.name} from Google Drive`}
+                        title="Delete from Google Drive"
+                        onClick={() => setConfirmId(item.id)}
+                      >
+                        <Trash />
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -1416,7 +2627,12 @@ export default function App() {
   const [compiledRevision, setCompiledRevision] = useState(-1);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [rawLogOpen, setRawLogOpen] = useState(false);
-  const [activePane, setActivePane] = useState<"source" | "preview">("source");
+  const [activePane, setActivePane] = useState<"source" | "preview" | "assistant">(
+    "source",
+  );
+  const [assistantOpen, setAssistantOpen] = useState(
+    () => safeStorageRead(ASSISTANT_OPEN_KEY, "0") === "1",
+  );
   const [cursor, setCursor] = useState({ line: 1, column: 1 });
   const [split, setSplit] = useState(() => {
     const stored = Number(safeStorageRead(SPLIT_KEY, "52"));
@@ -1434,6 +2650,27 @@ export default function App() {
     () => safeStorageRead(EXPLORER_HIDDEN_KEY, "0") === "1",
   );
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [compileRequest, setCompileRequest] = useState(0);
+  const [googleSession, setGoogleSession] = useState(readGoogleSession);
+  const [projectsOpen, setProjectsOpen] = useState(
+    () => googleSignIn.showProjects && Boolean(readGoogleSession()),
+  );
+  const [driveProjectId, setDriveProjectId] = useState(() =>
+    safeStorageRead(DRIVE_PROJECT_KEY, ""),
+  );
+  const [driveDirty, setDriveDirty] = useState(
+    () => safeStorageRead(DRIVE_DIRTY_KEY, "0") === "1",
+  );
+  const [driveReady, setDriveReady] = useState(false);
+  const [driveBusy, setDriveBusy] = useState(false);
+  const [driveState, setDriveState] = useState<
+    "idle" | "saving" | "saved" | "error" | "expired"
+  >("idle");
+  const [driveError, setDriveError] = useState("");
+  const [driveProjects, setDriveProjects] = useState<DriveProject[] | "loading" | null>(
+    "loading",
+  );
+  const [accountSettings, setAccountSettings] = useState<AccountSettings | null>(null);
 
   const editorRef = useRef<EditorView | null>(null);
   const compilerRef = useRef<CompilerSession | null>(null);
@@ -1445,6 +2682,23 @@ export default function App() {
   const fileMenuRef = useRef<HTMLDivElement | null>(null);
   const fileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const fileMenuFocusRef = useRef<"first" | "last">("first");
+  // Edits from the preview outlive the render that prepared them, so they read
+  // the latest project and compile through these.
+  const projectRef = useRef(project);
+  const compileRef = useRef<() => Promise<CompileSummary>>(async () => ({
+    success: false,
+    message: "The compiler is not ready yet.",
+    diagnostics: [],
+    log: "",
+  }));
+  const busyRef = useRef(false);
+  const documentNameRef = useRef(documentName);
+  // The project and name that Google Drive last confirmed as saved.
+  const syncedRef = useRef<DriveSnapshot>({ project, documentName });
+  const driveTimerRef = useRef(0);
+  const driveQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const projectsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const projectsFocusRef = useRef<"editor" | "button" | null>(null);
 
   const activeEntry = project.files[project.activeFile];
   const source = activeEntry?.kind === "text" ? activeEntry.content : "";
@@ -1529,6 +2783,14 @@ export default function App() {
   }, [explorerHidden]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(ASSISTANT_OPEN_KEY, assistantOpen ? "1" : "0");
+    } catch {
+      // The panel still opens when local storage is unavailable.
+    }
+  }, [assistantOpen]);
+
+  useEffect(() => {
     if (!fileMenuOpen) return;
     const items = Array.from(
       fileMenuRef.current?.querySelectorAll<HTMLButtonElement>(
@@ -1580,19 +2842,384 @@ export default function App() {
   }, [activeEntry, project.activeFile]);
 
   const exportProject = useCallback(() => {
-    const archiveEntries = Object.fromEntries(
-      Object.entries(project.files).map(([path, file]) => [
-        path,
-        file.kind === "text" ? strToU8(file.content) : file.content,
-      ]),
-    );
-    const archive = zipSync(archiveEntries, { level: 6 });
-    const archiveBytes = new Uint8Array(archive);
     downloadBlob(
-      new Blob([archiveBytes.buffer], { type: "application/zip" }),
+      new Blob([projectToZip(project.files)], { type: "application/zip" }),
       `${sanitizeFilename(documentName)}.zip`,
     );
   }, [documentName, project.files]);
+
+  const loadProject = useCallback(
+    (
+      files: ProjectFiles,
+      mainFile: string,
+      activeFile: string,
+      name: string,
+      label: string,
+    ) => {
+      const next = {
+        files,
+        activeFile: files[activeFile] ? activeFile : mainFile,
+        mainFile,
+      };
+      const nextName = sanitizeFilename(name);
+      setProject(next);
+      setDocumentName(nextName);
+      setProjectRevision((value) => value + 1);
+      setCompiledRevision(-1);
+      setPdfBytes(null);
+      setSyncTexData(null);
+      setDiagnostics([]);
+      setLogs([]);
+      setCompileStatus({ phase: "idle", label });
+      return { project: next, documentName: nextName };
+    },
+    [],
+  );
+
+  const reportError = useCallback((message: string, label: string) => {
+    setDiagnostics([{ severity: "error", message }]);
+    setDiagnosticsOpen(true);
+    setCompileStatus({ phase: "error", label });
+  }, []);
+
+  const uploadProject = (
+    session: GoogleSession,
+    snapshot: DriveSnapshot,
+    id: string,
+  ) => {
+    const run = async () => {
+      const savedId = await uploadDriveFile(session, {
+        id: id || undefined,
+        name: `${sanitizeFilename(snapshot.documentName)}.zip`,
+        mimeType: "application/zip",
+        appProperties: {
+          type: "project",
+          mainFile: snapshot.project.mainFile,
+          activeFile: snapshot.project.activeFile,
+        },
+        body: new Blob([projectToZip(snapshot.project.files)], {
+          type: "application/zip",
+        }),
+      });
+      syncedRef.current = snapshot;
+      if (
+        projectRef.current === snapshot.project &&
+        documentNameRef.current === snapshot.documentName
+      ) {
+        setDriveDirty(false);
+      }
+      setDriveState("saved");
+      setDriveError("");
+      return savedId;
+    };
+    const result = driveQueueRef.current.then(run, run);
+    driveQueueRef.current = result.catch(() => undefined);
+    return result;
+  };
+
+  const flushDriveSave = async () => {
+    const snapshot = {
+      project: projectRef.current,
+      documentName: documentNameRef.current,
+    };
+    if (
+      googleSession &&
+      driveReady &&
+      driveProjectId &&
+      (snapshot.project !== syncedRef.current.project ||
+        snapshot.documentName !== syncedRef.current.documentName)
+    ) {
+      window.clearTimeout(driveTimerRef.current);
+      await uploadProject(googleSession, snapshot, driveProjectId);
+    }
+    await driveQueueRef.current;
+  };
+
+  const runDriveAction = async (action: (session: GoogleSession) => Promise<void>) => {
+    if (!googleSession) return;
+    setDriveBusy(true);
+    setDriveError("");
+    try {
+      await action(googleSession);
+    } catch (error) {
+      if (error instanceof GoogleExpiredError) {
+        setDriveState("expired");
+      } else {
+        const message =
+          error instanceof Error ? error.message : "Google Drive did not respond.";
+        setDriveError(message);
+        reportError(message, "Google Drive action failed");
+      }
+    } finally {
+      setDriveBusy(false);
+    }
+  };
+
+  const refreshDriveProjects = async () => {
+    if (!googleSession) return;
+    setDriveProjects("loading");
+    setDriveError("");
+    try {
+      setDriveProjects(await listDriveProjects(googleSession));
+    } catch (error) {
+      setDriveProjects(null);
+      if (error instanceof GoogleExpiredError) setDriveState("expired");
+    }
+  };
+
+  const closeProjects = () => {
+    projectsFocusRef.current = "button";
+    setProjectsOpen(false);
+  };
+
+  const showEditor = () => {
+    projectsFocusRef.current = "editor";
+    setProjectsOpen(false);
+  };
+
+  useEffect(() => {
+    if (projectsOpen) return;
+    const target = projectsFocusRef.current;
+    projectsFocusRef.current = null;
+    if (target === "editor") {
+      editorRef.current?.focus();
+    } else if (target === "button") {
+      projectsButtonRef.current?.focus();
+    }
+  }, [projectsOpen]);
+
+  const openDriveProject = (target: DriveProject) => {
+    if (target.id === driveProjectId) {
+      closeProjects();
+      return;
+    }
+    void runDriveAction(async (session) => {
+      await flushDriveSave();
+      const files = projectFromZip(await downloadDriveFile(session, target.id));
+      const mainFile = files[target.mainFile]
+        ? target.mainFile
+        : pickMainFile(Object.keys(files));
+      if (!mainFile) {
+        throw new Error("The project must contain at least one .tex file.");
+      }
+      syncedRef.current = loadProject(
+        files,
+        mainFile,
+        target.activeFile,
+        target.name,
+        "Opened from Google Drive",
+      );
+      setDriveProjectId(target.id);
+      setDriveDirty(false);
+      setDriveState("saved");
+      showEditor();
+    });
+  };
+
+  const newDriveProject = () => {
+    void runDriveAction(async (session) => {
+      await flushDriveSave();
+      const snapshot = loadProject(
+        { "main.tex": { kind: "text", content: STARTER_SOURCE } },
+        "main.tex",
+        "main.tex",
+        "untitled-paper",
+        "New project",
+      );
+      setDriveProjectId("");
+      setDriveDirty(false);
+      setDriveProjectId(await uploadProject(session, snapshot, ""));
+      showEditor();
+    });
+  };
+
+  const saveProjectToDrive = () => {
+    void runDriveAction(async (session) => {
+      const snapshot = {
+        project: projectRef.current,
+        documentName: documentNameRef.current,
+      };
+      setDriveProjectId(await uploadProject(session, snapshot, ""));
+      await refreshDriveProjects();
+    });
+  };
+
+  const deleteDriveProject = (target: DriveProject) => {
+    void runDriveAction(async (session) => {
+      const isOpen = target.id === driveProjectId;
+      if (isOpen) {
+        window.clearTimeout(driveTimerRef.current);
+        await driveQueueRef.current;
+      }
+      await deleteDriveFile(session, target.id);
+      if (isOpen) {
+        setDriveProjectId("");
+        setDriveDirty(false);
+        setDriveState("idle");
+      }
+      await refreshDriveProjects();
+    });
+  };
+
+  const signIn = () =>
+    startGoogleSignIn(googleSession?.email || undefined, driveState !== "expired");
+
+  const signOut = async () => {
+    if (!googleSession) return;
+    try {
+      await flushDriveSave();
+    } catch {
+      // Sign out even when the last save fails; the local copy keeps the edits.
+    }
+    signOutGoogle(googleSession);
+    setGoogleSession(null);
+    setDriveReady(false);
+    setDriveState("idle");
+    setDriveProjects("loading");
+    setAccountSettings(null);
+    setDriveError("");
+    closeProjects();
+  };
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(DRIVE_PROJECT_KEY, driveProjectId);
+      window.localStorage.setItem(DRIVE_DIRTY_KEY, driveDirty ? "1" : "0");
+    } catch {
+      // Drive saving still works for this page when local storage is unavailable.
+    }
+  }, [driveDirty, driveProjectId]);
+
+  useEffect(() => {
+    if (googleSignIn.error) reportError(googleSignIn.error, "Google sign-in failed");
+  }, [reportError]);
+
+  const sessionToken = googleSession?.token;
+  useEffect(() => {
+    if (!googleSession) return;
+    const session = googleSession;
+    let cancelled = false;
+    const fail = (error: unknown) => {
+      if (cancelled) return;
+      if (error instanceof GoogleExpiredError) {
+        setDriveState("expired");
+        return;
+      }
+      const message =
+        error instanceof Error ? error.message : "Google Drive did not respond.";
+      setDriveError(message);
+      reportError(message, "Google Drive unavailable");
+    };
+
+    void (async () => {
+      try {
+        if (!session.email) {
+          const email = await fetchGoogleEmail(session);
+          if (cancelled) return;
+          const next = { ...session, email };
+          writeGoogleSession(next);
+          setGoogleSession(next);
+        }
+        const settings = await loadDriveSettings(session);
+        if (cancelled) return;
+        if (settings) setAccountSettings(settings);
+      } catch (error) {
+        fail(error);
+        return;
+      }
+
+      if (!driveProjectId) {
+        if (!cancelled) setDriveReady(true);
+        return;
+      }
+      try {
+        const [target, bytes] = await Promise.all([
+          getDriveProject(session, driveProjectId),
+          downloadDriveFile(session, driveProjectId),
+        ]);
+        const files = projectFromZip(bytes);
+        if (cancelled) return;
+        if (driveDirty) {
+          // Local storage keeps only text, so images come back from Drive
+          // while the newer local text wins.
+          setProject((current) => ({
+            ...current,
+            files: {
+              ...Object.fromEntries(
+                Object.entries(files).filter(([, file]) => file.kind === "binary"),
+              ),
+              ...current.files,
+            },
+          }));
+          setProjectRevision((value) => value + 1);
+        } else {
+          const mainFile = files[target.mainFile]
+            ? target.mainFile
+            : pickMainFile(Object.keys(files));
+          if (mainFile) {
+            syncedRef.current = loadProject(
+              files,
+              mainFile,
+              target.activeFile,
+              target.name,
+              "Opened from Google Drive",
+            );
+          }
+          setDriveState("saved");
+        }
+        setDriveReady(true);
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof GoogleRequestError && error.status === 404) {
+          setDriveProjectId("");
+          setDriveDirty(false);
+          setDriveReady(true);
+          return;
+        }
+        fail(error);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionToken]);
+
+  useEffect(() => {
+    if (!driveProjectId) return;
+    const snapshot = { project, documentName };
+    if (
+      snapshot.project === syncedRef.current.project &&
+      snapshot.documentName === syncedRef.current.documentName
+    ) {
+      return;
+    }
+    setDriveDirty(true);
+    if (!googleSession || !driveReady) return;
+    if (googleSession.expiresAt <= Date.now()) {
+      setDriveState("expired");
+      return;
+    }
+    setDriveState("saving");
+    const session = googleSession;
+    driveTimerRef.current = window.setTimeout(() => {
+      uploadProject(session, snapshot, driveProjectId).catch((error: unknown) => {
+        if (error instanceof GoogleExpiredError) {
+          setDriveState("expired");
+        } else {
+          setDriveState("error");
+          setDriveError(
+            error instanceof Error ? error.message : "Google Drive did not respond.",
+          );
+        }
+      });
+    }, DRIVE_SAVE_DELAY);
+    return () => window.clearTimeout(driveTimerRef.current);
+  }, [documentName, driveProjectId, driveReady, googleSession, project]);
+
+  useEffect(() => {
+    if (projectsOpen && googleSession) void refreshDriveProjects();
+  }, [projectsOpen, sessionToken]);
 
   const importProject = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1611,91 +3238,36 @@ export default function App() {
             "main.tex": { kind: "text", content: await file.text() },
           };
         } else {
-          const unpacked = unzipSync(new Uint8Array(await file.arrayBuffer()));
-          const rawPaths = Object.keys(unpacked)
-            .filter((path) => !path.endsWith("/"))
-            .map(normalizeProjectPath)
-            .filter(
-              (path) =>
-                path &&
-                !path.startsWith("__MACOSX/") &&
-                !path.endsWith(".DS_Store"),
-            );
-          if (rawPaths.length === 0) {
-            throw new Error("The archive does not contain any project files.");
-          }
-          if (rawPaths.length > MAX_PROJECT_FILES) {
-            throw new Error(`Projects can contain at most ${MAX_PROJECT_FILES} files.`);
-          }
-
-          const firstSegments = rawPaths.map((path) => path.split("/")[0]);
-          const commonRoot =
-            rawPaths.every((path) => path.includes("/")) &&
-            firstSegments.every((segment) => segment === firstSegments[0])
-              ? `${firstSegments[0]}/`
-              : "";
-
-          importedFiles = {};
-          for (const originalPath of Object.keys(unpacked)) {
-            if (originalPath.endsWith("/")) continue;
-            const normalized = normalizeProjectPath(originalPath);
-            if (
-              !normalized ||
-              normalized.startsWith("__MACOSX/") ||
-              normalized.endsWith(".DS_Store")
-            ) {
-              continue;
-            }
-            const path = commonRoot
-              ? normalized.slice(commonRoot.length)
-              : normalized;
-            if (!path) continue;
-            const bytes = new Uint8Array(unpacked[originalPath]);
-            importedFiles[path] = isTextPath(path)
-              ? { kind: "text", content: new TextDecoder().decode(bytes) }
-              : { kind: "binary", content: bytes };
-          }
+          importedFiles = projectFromZip(new Uint8Array(await file.arrayBuffer()));
         }
 
         if (projectByteSize(importedFiles) > MAX_PROJECT_BYTES) {
           throw new Error("The unpacked project is larger than 50 MiB.");
         }
 
-        const paths = Object.keys(importedFiles);
-        const mainFile =
-          paths.find((path) => path.toLowerCase() === "main.tex") ??
-          paths.find((path) => path.toLowerCase().endsWith("/main.tex")) ??
-          paths.find((path) => path.toLowerCase().endsWith(".tex"));
+        const mainFile = pickMainFile(Object.keys(importedFiles));
         if (!mainFile) {
           throw new Error("The project must contain at least one .tex file.");
         }
 
-        setProject({ files: importedFiles, activeFile: mainFile, mainFile });
-        setDocumentName(
-          sanitizeFilename(file.name.replace(/\.(zip|tex)$/i, "")),
+        await flushDriveSave().catch(() => undefined);
+        setDriveProjectId("");
+        setDriveDirty(false);
+        loadProject(
+          importedFiles,
+          mainFile,
+          mainFile,
+          file.name.replace(/\.(zip|tex)$/i, ""),
+          "Project imported",
         );
-        setProjectRevision((value) => value + 1);
-        setCompiledRevision(-1);
-        setPdfBytes(null);
-        setSyncTexData(null);
-        setDiagnostics([]);
-        setLogs([]);
-        setCompileStatus({ phase: "idle", label: "Project imported" });
       } catch (error) {
-        setDiagnostics([
-          {
-            severity: "error",
-            message:
-              error instanceof Error
-                ? error.message
-                : "The project could not be imported.",
-          },
-        ]);
-        setDiagnosticsOpen(true);
-        setCompileStatus({ phase: "error", label: "Import failed" });
+        reportError(
+          error instanceof Error ? error.message : "The project could not be imported.",
+          "Import failed",
+        );
       }
     },
-    [],
+    [flushDriveSave, loadProject, reportError],
   );
 
   const downloadPdf = useCallback(() => {
@@ -1722,37 +3294,35 @@ export default function App() {
     setProgress("");
   }, []);
 
-  const compile = useCallback(async () => {
+  const compile = useCallback(async (): Promise<CompileSummary> => {
+    const failure = (message: string, log = ""): CompileSummary => ({
+      success: false,
+      message,
+      diagnostics: [{ message }],
+      log,
+    });
     if (busy) {
       cancelCompile();
-      return;
+      return failure("Compile cancelled.");
     }
 
     const mainEntry = project.files[project.mainFile];
     if (!mainEntry || mainEntry.kind !== "text") {
-      setDiagnostics([
-        {
-          severity: "error",
-          message: "Choose a text .tex file as the project main file.",
-        },
-      ]);
+      const message = "Choose a text .tex file as the project main file.";
+      setDiagnostics([{ severity: "error", message }]);
       setDiagnosticsOpen(true);
-      return;
+      return failure(message);
     }
 
     const mainByteSize = new TextEncoder().encode(mainEntry.content).byteLength;
     if (mainByteSize > 1024 * 1024 || byteSize > MAX_PROJECT_BYTES) {
-      setDiagnostics([
-        {
-          severity: "error",
-          message:
-            mainByteSize > 1024 * 1024
-              ? "The main source is larger than the 1 MiB compilation limit."
-              : "The project is larger than the 50 MiB compilation limit.",
-        },
-      ]);
+      const message =
+        mainByteSize > 1024 * 1024
+          ? "The main source is larger than the 1 MiB compilation limit."
+          : "The project is larger than the 50 MiB compilation limit.";
+      setDiagnostics([{ severity: "error", message }]);
       setDiagnosticsOpen(true);
-      return;
+      return failure(message);
     }
 
     const requestId = requestRef.current + 1;
@@ -1782,7 +3352,7 @@ export default function App() {
           handleLog,
         );
       }
-      if (requestRef.current !== requestId) return;
+      if (requestRef.current !== requestId) return failure("A newer compile replaced this one.");
 
       setCompileStatus({
         phase: "compiling",
@@ -1794,37 +3364,34 @@ export default function App() {
         mainFileSnapshot,
         additionalFiles,
       );
-      if (requestRef.current !== requestId) return;
+      if (requestRef.current !== requestId) return failure("A newer compile replaced this one.");
 
       const duration = performance.now() - startedAt;
       if (result.success) {
+        const label = `Compiled in ${(duration / 1000).toFixed(1)} s`;
         setPdfBytes(result.pdf.slice());
         setSyncTexData(result.syncTexData ?? null);
         setCompiledRevision(revisionSnapshot);
         setLogs(result.log ? result.log.split("\n").slice(-2000) : []);
-        setCompileStatus({
-          phase: "success",
-          label: `Compiled in ${(duration / 1000).toFixed(1)} s`,
-          duration,
-        });
+        setCompileStatus({ phase: "success", label, duration });
         setProgress("");
-      } else {
-        const rawLog = result.log ?? "";
-        setLogs(rawLog.split("\n").slice(-2000));
-        setDiagnostics([
-          parseDiagnostic(result.error, rawLog, mainFileSnapshot),
-        ]);
-        setDiagnosticsOpen(true);
-        setRawLogOpen(true);
-        setCompileStatus({
-          phase: "error",
-          label: "Compile failed",
-          duration,
-        });
-        setProgress("");
+        return { success: true, message: label, diagnostics: [], log: result.log ?? "" };
       }
+      const rawLog = result.log ?? "";
+      const diagnostic = parseDiagnostic(result.error, rawLog, mainFileSnapshot);
+      setLogs(rawLog.split("\n").slice(-2000));
+      setDiagnostics([diagnostic]);
+      setDiagnosticsOpen(true);
+      setRawLogOpen(true);
+      setCompileStatus({
+        phase: "error",
+        label: "Compile failed",
+        duration,
+      });
+      setProgress("");
+      return { success: false, message: "Compile failed.", diagnostics: [diagnostic], log: rawLog };
     } catch (error) {
-      if (requestRef.current !== requestId) return;
+      if (requestRef.current !== requestId) return failure("A newer compile replaced this one.");
       const message =
         error instanceof Error
           ? error.message
@@ -1836,6 +3403,7 @@ export default function App() {
       setProgress("");
       compilerRef.current?.compiler.unload();
       compilerRef.current = null;
+      return failure(message);
     }
   }, [
     busy,
@@ -1867,6 +3435,52 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [compile, downloadSource, exportProject]);
 
+  useLayoutEffect(() => {
+    projectRef.current = project;
+    documentNameRef.current = documentName;
+    compileRef.current = compile;
+    busyRef.current = busy;
+  });
+
+  const assistantHost = useMemo<AssistantHost>(
+    () => ({
+      getProject: () => projectRef.current as AssistantProject,
+      setProject: (next) => {
+        flushSync(() => {
+          setProject(next as typeof projectRef.current);
+          setProjectRevision((value) => value + 1);
+        });
+      },
+      compile: async () => {
+        while (busyRef.current) {
+          await new Promise((resolve) => window.setTimeout(resolve, 200));
+        }
+        return compileRef.current();
+      },
+      isTextPath,
+      normalizePath: normalizeProjectPath,
+      maxFiles: MAX_PROJECT_FILES,
+      maxBytes: MAX_PROJECT_BYTES,
+    }),
+    [],
+  );
+
+  useEffect(() => {
+    if (compileRequest > 0) void compileRef.current();
+  }, [compileRequest]);
+
+  const showAssistant = assistantOpen || activePane === "assistant";
+
+  const openAssistant = () => {
+    setAssistantOpen(true);
+    if (window.matchMedia("(max-width: 899px)").matches) setActivePane("assistant");
+  };
+
+  const closeAssistant = () => {
+    setAssistantOpen(false);
+    if (activePane === "assistant") setActivePane("source");
+  };
+
   const revealSourceLine = (file: string | undefined, lineNumber: number) => {
     if (file && project.files[file]?.kind === "text") {
       setProject((current) => ({ ...current, activeFile: file }));
@@ -1895,13 +3509,19 @@ export default function App() {
     if (diagnostic.line) revealSourceLine(diagnostic.file, diagnostic.line);
   };
 
-  const locateSource = (page: number, x: number, y: number) => {
-    if (!syncTexData) return;
+  const getSyncTexIndex = () => {
+    if (!syncTexData) return null;
     if (syncTexRef.current?.data !== syncTexData) {
       syncTexRef.current = { data: syncTexData, index: parseSyncTex(syncTexData) };
     }
+    return syncTexRef.current.index;
+  };
+
+  const locateSource = (page: number, x: number, y: number) => {
+    const index = getSyncTexIndex();
+    if (!index) return;
     const target = findSyncTexSource(
-      syncTexRef.current.index,
+      index,
       page,
       x,
       y,
@@ -1915,6 +3535,90 @@ export default function App() {
     let line = Math.min(target.line, lines.length);
     while (line > 1 && !lines[line - 1].trim()) line -= 1;
     revealSourceLine(target.file, line);
+  };
+
+  const applyTextEdit = (file: string, match: SourceTextMatch, replacement: string) => {
+    const current = projectRef.current.files[file];
+    if (
+      current?.kind !== "text" ||
+      current.content.slice(match.start, match.end) !== match.source
+    ) {
+      return false;
+    }
+    const change = planTextReplacement(match, replacement);
+    if (!change) return true;
+
+    const view = editorRef.current;
+    if (
+      file === projectRef.current.activeFile &&
+      view &&
+      view.state.doc.toString() === current.content
+    ) {
+      // Going through the editor keeps the change on its undo history.
+      view.dispatch({
+        changes: { from: change.from, to: change.to, insert: change.insert },
+        selection: { anchor: change.from + change.insert.length },
+        effects: EditorView.scrollIntoView(change.from, { y: "center" }),
+        userEvent: "input.replace",
+      });
+    } else {
+      const content =
+        current.content.slice(0, change.from) +
+        change.insert +
+        current.content.slice(change.to);
+      setProject((value) => ({
+        ...value,
+        files: { ...value.files, [file]: { kind: "text", content } },
+      }));
+      setProjectRevision((value) => value + 1);
+    }
+    if (!busy) setCompileRequest((value) => value + 1);
+    return true;
+  };
+
+  const prepareTextEdit = (selection: PdfTextSelection): PdfTextEdit => {
+    const index = getSyncTexIndex();
+    const target =
+      index &&
+      findSyncTexSource(
+        index,
+        selection.page,
+        selection.start.x,
+        selection.start.y,
+        (file) => project.files[file]?.kind === "text",
+      );
+    const entry = target ? project.files[target.file] : undefined;
+    if (!target || entry?.kind !== "text") {
+      return {
+        kind: "unavailable",
+        message: "This part of the PDF doesn't come from a file you can edit here.",
+      };
+    }
+
+    const reveal = () => revealSourceLine(target.file, target.line);
+    const match = findTextInSource(entry.content, selection.text, target.line);
+    if (match === "too-long") {
+      return {
+        kind: "unavailable",
+        message: `Select up to ${MAX_EDIT_CHARS} characters at a time.`,
+        reveal,
+      };
+    }
+    if (!match) {
+      return {
+        kind: "unavailable",
+        message: stale
+          ? "The preview is out of date, so this text may have changed. Compile, then try again."
+          : `This text isn't written out in ${target.file}. It may come from a command, maths or formatting, so edit it in the source instead.`,
+        reveal,
+      };
+    }
+    return {
+      kind: "ready",
+      location: `${target.file}:${match.line}`,
+      text: match.chars.join(""),
+      apply: (replacement) => applyTextEdit(target.file, match, replacement),
+    };
   };
 
   const handleEditorUpdate = useCallback((update: ViewUpdate) => {
@@ -1938,7 +3642,9 @@ export default function App() {
     const workspace = event.currentTarget.parentElement;
     if (!workspace) return;
     const rect = workspace.getBoundingClientRect();
-    const next = ((event.clientX - rect.left) / rect.width) * 100;
+    const assistant = workspace.querySelector<HTMLElement>(".assistant-pane:not([hidden])");
+    const shared = rect.width - (assistant ? assistant.getBoundingClientRect().width + 10 : 0);
+    const next = ((event.clientX - rect.left) / shared) * 100;
     setSplit(Math.min(68, Math.max(32, next)));
   };
 
@@ -2062,8 +3768,21 @@ export default function App() {
     setExplorerWidth(clampExplorerWidth(next, container));
   };
 
+  const showProjects = projectsOpen && Boolean(googleSession);
+  const googleActive = Boolean(googleSession) && driveState !== "expired";
+  const driveLabel =
+    driveProjectId && googleSession
+      ? {
+          idle: "",
+          saving: "Saving to Google Drive",
+          saved: "Saved to Google Drive",
+          error: "Not saved to Google Drive",
+          expired: "Google sign-in expired",
+        }[driveState]
+      : "";
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell${showProjects ? " projects-open" : ""}`}>
       <a className="skip-link" href="#source-editor">
         Skip to source
       </a>
@@ -2078,10 +3797,53 @@ export default function App() {
           <span />
         </div>
         <div className="window-title">
-          {sanitizeFilename(documentName)} - LaTeX Editor
+          {showProjects ? "Projects" : sanitizeFilename(documentName)} - LaTeX Editor
         </div>
-        <div className="title-spacer" />
+        {GOOGLE_CLIENT_ID && !showProjects ? (
+          <button
+            ref={projectsButtonRef}
+            className="account-button"
+            type="button"
+            onClick={googleActive ? () => setProjectsOpen(true) : signIn}
+            title={
+              googleActive
+                ? `Google Drive projects (${googleSession?.email || "signed in"})`
+                : "Sign in with Google to save projects and API keys to your Google Drive"
+            }
+          >
+            {googleActive ? <Cloud aria-hidden="true" /> : <GoogleLogo aria-hidden="true" />}
+            <span>
+              {googleActive
+                ? "Projects"
+                : driveState === "expired"
+                  ? "Sign in again"
+                  : "Sign in"}
+            </span>
+          </button>
+        ) : (
+          <div className="title-spacer" />
+        )}
       </header>
+
+      {showProjects && googleSession && (
+        <ProjectsScreen
+          email={googleSession.email}
+          projects={driveProjects}
+          expired={driveState === "expired"}
+          error={driveError}
+          openProjectId={driveProjectId}
+          openProjectName={sanitizeFilename(documentName)}
+          busy={driveBusy || !driveReady}
+          onOpen={openDriveProject}
+          onNew={newDriveProject}
+          onSaveCurrent={saveProjectToDrive}
+          onDelete={deleteDriveProject}
+          onRefresh={() => void refreshDriveProjects()}
+          onSignIn={signIn}
+          onSignOut={() => void signOut()}
+          onClose={closeProjects}
+        />
+      )}
 
       <div className="command-bar">
         <div className="brand">
@@ -2104,14 +3866,25 @@ export default function App() {
           />
         </label>
 
-        <span className={`save-state ${saveState}`} aria-live="polite">
-          {saveState === "saving"
-            ? "Saving"
-            : saveState === "saved"
-              ? hasBinaryFiles
-                ? "Text saved locally"
-                : "Saved locally"
-              : "Not saved"}
+        <span
+          className={`save-state ${
+            driveLabel
+              ? driveState === "error" || driveState === "expired"
+                ? "error"
+                : driveState
+              : saveState
+          }`}
+          title={driveLabel && driveState === "error" ? driveError : undefined}
+          aria-live="polite"
+        >
+          {driveLabel ||
+            (saveState === "saving"
+              ? "Saving"
+              : saveState === "saved"
+                ? hasBinaryFiles
+                  ? "Text saved locally"
+                  : "Saved locally"
+                : "Not saved")}
         </span>
 
         <div className="command-spacer" />
@@ -2170,6 +3943,17 @@ export default function App() {
         >
           <FilePdf />
           <span>{stale ? "Last PDF" : "Download PDF"}</span>
+        </button>
+
+        <button
+          className={`toolbar-button${showAssistant ? " active" : ""}`}
+          type="button"
+          aria-pressed={showAssistant}
+          onClick={() => (showAssistant ? closeAssistant() : openAssistant())}
+          title="AI assistant"
+        >
+          <Sparkle />
+          <span>Assistant</span>
         </button>
 
         <button
@@ -2285,11 +4069,21 @@ export default function App() {
           Preview
           {stale && <span className="tab-state">Out of date</span>}
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activePane === "assistant"}
+          onClick={() => setActivePane("assistant")}
+        >
+          Assistant
+        </button>
       </div>
 
       <main
-        className={`workspace active-${activePane}`}
-        style={{ "--source-width": `${split}%` } as React.CSSProperties}
+        className={`workspace active-${activePane}${showAssistant ? " with-assistant" : ""}`}
+        style={
+          { "--source-width": `${split}%`, "--split-ratio": split / 100 } as React.CSSProperties
+        }
       >
         <section
           className="pane source-pane"
@@ -2478,6 +4272,19 @@ export default function App() {
           busy={busy}
           onDownload={downloadPdf}
           onLocateSource={syncTexData ? locateSource : undefined}
+          onPrepareEdit={syncTexData ? prepareTextEdit : undefined}
+        />
+
+        <AssistantPanel
+          host={assistantHost}
+          hidden={!showAssistant}
+          onClose={closeAssistant}
+          accountSettings={accountSettings}
+          onSaveAccountSettings={
+            googleSession
+              ? (settings) => saveDriveSettings(googleSession, settings)
+              : undefined
+          }
         />
       </main>
 

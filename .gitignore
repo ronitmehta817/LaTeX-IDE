@@ -19,6 +19,9 @@ dist/
 *.8su
 *.bak
 
+# Wrangler
+.wrangler/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -2,6 +2,15 @@ import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 
+// NVIDIA's API sends no CORS headers, so browsers can only reach it through the app's own origin.
+const proxy = {
+  "/proxy/nvidia": {
+    target: "https://integrate.api.nvidia.com",
+    changeOrigin: true,
+    rewrite: (path) => path.replace(/^\/proxy\/nvidia/, ""),
+  },
+};
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -23,11 +32,13 @@ export default defineConfig({
       "Cross-Origin-Embedder-Policy": "require-corp",
       "Cross-Origin-Opener-Policy": "same-origin",
     },
+    proxy,
   },
   preview: {
     headers: {
       "Cross-Origin-Embedder-Policy": "require-corp",
       "Cross-Origin-Opener-Policy": "same-origin",
     },
+    proxy,
   },
 });
