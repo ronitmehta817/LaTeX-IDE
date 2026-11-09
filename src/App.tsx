@@ -392,9 +392,110 @@ class GoogleRequestError extends Error {
   }
 }
 
-// The app's same-origin opener policy breaks Google's popup flow, so sign-in
-// redirects the whole page and Google returns the token in the URL hash.
-function startGoogleSignIn(loginHint: string | undefined, showProjects: boolean) {
+interface GsiTokenResponse {
+  access_token?: string;
+  expires_in?: string | number;
+  scope?: string;
+  token_type?: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface GsiTokenClient {
+  requestAccessToken: (overrideConfig?: { prompt?: string; login_hint?: string }) => void;
+}
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        oauth2?: {
+          initTokenClient: (config: {
+            client_id: string;
+            scope: string;
+            callback: (response: GsiTokenResponse) => void;
+            error_callback?: (error: { type: string; message: string }) => void;
+            prompt?: string;
+          }) => GsiTokenClient;
+          revoke: (token: string, done?: () => void) => void;
+        };
+      };
+    };
+  }
+}
+
+// Signs in with Google using modern Google Identity Services (GIS) token client popup,
+// with an automatic fallback to full-page redirect if GIS popup cannot open.
+function requestGoogleSignIn(options: {
+  loginHint?: string;
+  showProjects: boolean;
+  onSuccess: (session: GoogleSession, showProjects: boolean) => void;
+  onError: (error: string) => void;
+}) {
+  if (!GOOGLE_CLIENT_ID) {
+    options.onError("Google Client ID is not configured.");
+    return;
+  }
+
+  const oauth2 = window.google?.accounts?.oauth2;
+  if (oauth2?.initTokenClient) {
+    try {
+      const client = oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: GOOGLE_SCOPES,
+        callback: (response: GsiTokenResponse) => {
+          if (response.error) {
+            options.onError(
+              response.error === "access_denied"
+                ? "Google sign-in was cancelled."
+                : `Google sign-in failed (${response.error_description || response.error}).`,
+            );
+            return;
+          }
+          if (!response.access_token) {
+            options.onError("No access token returned from Google.");
+            return;
+          }
+          const granted = response.scope || "";
+          if (granted && !granted.split(" ").includes(DRIVE_SCOPE)) {
+            options.onError(
+              "Google sign-in needs permission to keep this app's files in your Google Drive. Sign in again and allow it.",
+            );
+            return;
+          }
+
+          const session: GoogleSession = {
+            token: response.access_token,
+            expiresAt: Date.now() + Number(response.expires_in ?? 3600) * 1000,
+            email: "",
+          };
+          writeGoogleSession(session);
+          options.onSuccess(session, options.showProjects);
+        },
+        error_callback: (error) => {
+          if (error.type === "popup_failed_to_open" || error.type === "popup_closed") {
+            startGoogleSignInRedirect(options.loginHint, options.showProjects);
+          } else {
+            options.onError(`Google sign-in error: ${error.message || error.type}`);
+          }
+        },
+      });
+
+      client.requestAccessToken({
+        prompt: "",
+        login_hint: options.loginHint,
+      });
+      return;
+    } catch {
+      // Fall through to redirect
+    }
+  }
+
+  // Fallback to full-page redirect
+  startGoogleSignInRedirect(options.loginHint, options.showProjects);
+}
+
+function startGoogleSignInRedirect(loginHint: string | undefined, showProjects: boolean) {
   const state = crypto.randomUUID();
   try {
     window.sessionStorage.setItem(GOOGLE_STATE_KEY, JSON.stringify({ state, showProjects }));
@@ -497,13 +598,21 @@ function writeGoogleSession(session: GoogleSession | null) {
 }
 
 function signOutGoogle(session: GoogleSession) {
-  void fetch(
-    `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(session.token)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    },
-  ).catch(() => undefined);
+  try {
+    if (window.google?.accounts?.oauth2?.revoke) {
+      window.google.accounts.oauth2.revoke(session.token, () => undefined);
+    } else {
+      void fetch(
+        `https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(session.token)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        },
+      ).catch(() => undefined);
+    }
+  } catch {
+    // Session is removed regardless
+  }
   writeGoogleSession(null);
 }
 
@@ -3061,8 +3170,19 @@ export default function App() {
     });
   };
 
-  const signIn = () =>
-    startGoogleSignIn(googleSession?.email || undefined, driveState !== "expired");
+  const signIn = () => {
+    requestGoogleSignIn({
+      loginHint: googleSession?.email || undefined,
+      showProjects: driveState !== "expired",
+      onSuccess: (session, showProjects) => {
+        setGoogleSession(session);
+        if (showProjects) setProjectsOpen(true);
+      },
+      onError: (error) => {
+        reportError(error, "Google sign-in failed");
+      },
+    });
+  };
 
   const signOut = async () => {
     if (!googleSession) return;
