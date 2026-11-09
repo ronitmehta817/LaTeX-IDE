@@ -21,3 +21,14 @@ npm run preview
 # Install dependencies (run once)
 npm install
 ```
+
+## Google sign-in (optional)
+The dev and preview servers run worker/index.js for /auth, like Cloudflare does.
+Create .env.local next to package.json, then restart the server:
+```powershell
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+SESSION_SECRET=any-random-64-hex-characters
+```
+Add http://localhost:5173/auth/callback (and any other port you use) as an
+authorized redirect URI of the Google OAuth client.
