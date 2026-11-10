@@ -1,4 +1,4 @@
 # Same headers as the dev and preview servers in vite.config.mjs.
 /*
   Cross-Origin-Embedder-Policy: require-corp
-  Cross-Origin-Opener-Policy: same-origin-allow-popups
+  Cross-Origin-Opener-Policy: same-origin
