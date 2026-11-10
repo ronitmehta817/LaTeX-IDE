@@ -67,6 +67,9 @@ export type ChatMessage =
 export type ToolStatus = "running" | "done" | "error";
 
 export type AssistantEvent =
+  | { type: "waiting" }
+  | { type: "thinking"; text: string }
+  | { type: "thinking-end" }
   | { type: "text"; text: string }
   | { type: "message-end" }
   | { type: "tool"; id: string; status: ToolStatus; summary: string };
@@ -679,11 +682,36 @@ function thinkingParameter(settings: AssistantSettings) {
     : { reasoning_effort: settings.thinking };
 }
 
+// Some models, NVIDIA's among them, start the answer with <think>…</think>
+// instead of sending the reasoning in its own field.
+function splitThinking(raw: string) {
+  const trimmed = raw.trimStart();
+  if (trimmed && trimmed.length < 7 && "<think>".startsWith(trimmed)) return { thought: "", content: "" };
+  if (!trimmed.startsWith("<think>")) return { thought: "", content: raw };
+  const rest = trimmed.slice(7);
+  const end = rest.indexOf("</think>");
+  if (end < 0) return { thought: rest, content: "" };
+  return { thought: rest.slice(0, end), content: rest.slice(end + 8).trimStart() };
+}
+
+type StreamHandlers = {
+  text: (text: string) => void;
+  thinking: (text: string) => void;
+  thinkingEnd: () => void;
+};
+
+type Delta = {
+  content?: string | null;
+  reasoning_content?: string | null;
+  reasoning?: string | null;
+  tool_calls?: RawToolCall[];
+};
+
 async function requestCompletion(
   settings: AssistantSettings,
   messages: ChatMessage[],
   signal: AbortSignal,
-  onText: (text: string) => void,
+  handlers: StreamHandlers,
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
   const url = endpointUrl(settings.baseUrl);
   const isNvidia = settings.baseUrl.includes("/proxy/nvidia") || settings.baseUrl.includes("nvidia.com");
@@ -713,17 +741,42 @@ async function requestCompletion(
   if (!response.ok) throw new AssistantError(await describeFailure(response));
 
   const calls: ToolCall[] = [];
-  let content = "";
+  let raw = "";
+  let reasoning = "";
+  let shownText = "";
+  let shownThought = "";
+  let thinkingDone = false;
+  const take = (delta: Delta) => {
+    if (typeof delta.content === "string") raw += delta.content;
+    const thought = delta.reasoning_content ?? delta.reasoning;
+    if (typeof thought === "string") reasoning += thought;
+    for (const part of delta.tool_calls ?? []) mergeToolCall(calls, part);
+  };
+  // Reasoning is shown while it streams and ends once the answer or a tool call starts.
+  const flush = (final: boolean) => {
+    const split = splitThinking(raw);
+    const thought = `${reasoning}${split.thought}`;
+    if (thought && !thinkingDone) {
+      if (thought !== shownThought) {
+        shownThought = thought;
+        handlers.thinking(thought);
+      }
+      if (final || split.content || calls.length) {
+        thinkingDone = true;
+        handlers.thinkingEnd();
+      }
+    }
+    if (split.content !== shownText) {
+      shownText = split.content;
+      handlers.text(split.content);
+    }
+  };
   const contentType = response.headers.get("content-type") ?? "";
 
   if (!contentType.includes("text/event-stream") || !response.body) {
-    const data = (await response.json()) as {
-      choices?: { message?: { content?: string | null; tool_calls?: RawToolCall[] } }[];
-    };
-    const message = data.choices?.[0]?.message;
-    content = typeof message?.content === "string" ? message.content : "";
-    if (content) onText(content);
-    for (const part of message?.tool_calls ?? []) mergeToolCall(calls, part);
+    const data = (await response.json()) as { choices?: { message?: Delta }[] };
+    take(data.choices?.[0]?.message ?? {});
+    flush(true);
   } else {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -739,10 +792,7 @@ async function requestCompletion(
         if (!line.startsWith("data:")) continue;
         const payload = line.slice(5).trim();
         if (!payload || payload === "[DONE]") continue;
-        let chunk: {
-          error?: { message?: string };
-          choices?: { delta?: { content?: string | null; tool_calls?: RawToolCall[] } }[];
-        };
+        let chunk: { error?: { message?: string }; choices?: { delta?: Delta }[] };
         try {
           chunk = JSON.parse(payload);
         } catch {
@@ -750,19 +800,15 @@ async function requestCompletion(
         }
         if (chunk.error) throw new AssistantError(chunk.error.message ?? "The service reported an error.");
         const delta = chunk.choices?.[0]?.delta;
-        if (!delta) continue;
-        if (typeof delta.content === "string" && delta.content) {
-          content += delta.content;
-          onText(content);
-        }
-        for (const part of delta.tool_calls ?? []) mergeToolCall(calls, part);
+        if (delta) take(delta);
       }
+      flush(done);
       if (done) break;
     }
   }
 
   return {
-    content,
+    content: splitThinking(raw).content,
     toolCalls: calls
       .filter((call): call is ToolCall => Boolean(call?.function.name))
       .map((call, index) => ({ ...call, id: call.id || `call_${index}` })),
@@ -881,9 +927,12 @@ export async function runAssistant({
   const messages: ChatMessage[] = [...history, { role: "user", content }];
 
   for (let step = 0; step < MAX_STEPS; step += 1) {
-    const reply = await requestCompletion(settings, [systemMessage(host), ...messages], signal, (text) =>
-      onEvent({ type: "text", text }),
-    );
+    onEvent({ type: "waiting" });
+    const reply = await requestCompletion(settings, [systemMessage(host), ...messages], signal, {
+      text: (text) => onEvent({ type: "text", text }),
+      thinking: (text) => onEvent({ type: "thinking", text }),
+      thinkingEnd: () => onEvent({ type: "thinking-end" }),
+    });
     if (reply.content) onEvent({ type: "message-end" });
     messages.push({
       role: "assistant",
