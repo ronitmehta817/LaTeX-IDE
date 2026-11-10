@@ -62,7 +62,7 @@ import { strToU8, unzipSync, zipSync } from "fflate";
 import { SiglumCompiler, resolveRuntime } from "@siglum/engine";
 import type { CompileResult } from "@siglum/engine/compiler";
 import workerUrl from "@siglum/engine/worker?url";
-import type { AssistantHost, AssistantProject, CompileSummary } from "./assistant";
+import { reportError, type AssistantHost, type AssistantProject, type CompileSummary } from "./assistant";
 import AssistantPanel, { readAccountSettings, type AccountSettings } from "./AssistantPanel";
 import "./styles.css";
 
@@ -482,6 +482,7 @@ async function googleFetch(
   url: string,
   init: RequestInit = {},
 ) {
+  const started = Date.now();
   if (session.expiresAt <= Date.now()) await refreshGoogleSession(session);
   const send = () => {
     const headers = new Headers(init.headers);
@@ -489,11 +490,11 @@ async function googleFetch(
     return fetch(url, { ...init, headers });
   };
   let response = await send();
+  // A 401 here usually means the token just expired, so it is renewed and sent once more.
   if (response.status === 401) {
     await refreshGoogleSession(session);
     response = await send();
   }
-  if (response.status === 401) throw new GoogleExpiredError();
   if (!response.ok) {
     let message = `Google Drive answered with status ${response.status}.`;
     try {
@@ -502,6 +503,17 @@ async function googleFetch(
     } catch {
       // Keep the status message.
     }
+    const address = new URL(url);
+    reportError({
+      source: "drive",
+      service: address.host,
+      method: init.method ?? "GET",
+      endpoint: address.pathname.replace(/\/files\/[^/]+/, "/files/:id"),
+      status: response.status,
+      message,
+      ms: Date.now() - started,
+    });
+    if (response.status === 401) throw new GoogleExpiredError();
     throw new GoogleRequestError(message, response.status);
   }
   return response;
