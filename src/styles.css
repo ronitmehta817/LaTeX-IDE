@@ -156,7 +156,7 @@ button:disabled {
   grid-template-rows: 38px minmax(0, 1fr);
 }
 
-.app-shell.projects-open > :not(.title-bar, .projects-screen) {
+.app-shell.projects-open> :not(.title-bar, .projects-screen) {
   display: none;
 }
 
@@ -534,7 +534,7 @@ button:disabled {
   gap: 8px;
 }
 
-.pane-heading-group > svg {
+.pane-heading-group>svg {
   color: var(--amber-text);
 }
 
@@ -684,7 +684,7 @@ button:disabled {
   color: var(--amber-text);
 }
 
-.project-explorer button > span {
+.project-explorer button>span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1089,7 +1089,7 @@ button:disabled {
   transform-origin: 0% 0%;
 }
 
-.pdf-page .textLayer > :not(.markedContent),
+.pdf-page .textLayer> :not(.markedContent),
 .pdf-page .textLayer .markedContent span:not(.markedContent) {
   --font-height: 0;
   --scale-x: 1;
@@ -1263,8 +1263,7 @@ button:disabled {
 .workspace.with-assistant {
   --assistant-width: min(380px, 36vw);
   grid-template-columns:
-    minmax(0, calc((100% - 10px - var(--assistant-width)) * var(--split-ratio)))
-    10px minmax(0, 1fr) var(--assistant-width);
+    minmax(0, calc((100% - 10px - var(--assistant-width)) * var(--split-ratio))) 10px minmax(0, 1fr) var(--assistant-width);
 }
 
 .assistant-pane {
@@ -1282,47 +1281,74 @@ button:disabled {
   gap: 2px;
 }
 
-.assistant-model {
-  display: block;
+.assistant-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 14px;
+}
+
+.assistant-log {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Each new turn and step rises into place once, on the shared curve. */
+.assistant-log>* {
+  animation: assistant-rise 0.6s var(--ease) both;
+}
+
+@keyframes assistant-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.assistant-turn {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  align-self: flex-end;
+  max-width: 88%;
+}
+
+.assistant-user {
+  padding: 9px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
+  color: var(--text-strong);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.assistant-meta {
+  max-width: 100%;
   overflow: hidden;
-  margin-top: 4px;
-  color: var(--text-muted);
+  color: var(--text-faint);
   font-family: var(--mono);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.assistant-scroll {
-  min-height: 0;
-  overflow: auto;
-  padding: 14px 12px;
-}
-
-.assistant-log {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.assistant-user {
-  align-self: flex-end;
-  max-width: 88%;
-  padding: 8px 12px;
-  border-radius: 12px 12px 4px 12px;
-  background: var(--navy);
-  color: var(--text-strong);
-  font-size: 13px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .assistant-text {
   color: var(--text);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.6;
   overflow-wrap: anywhere;
+}
+
+.assistant-text strong {
+  color: var(--text-strong);
+  font-weight: 650;
+}
+
+.assistant-text li::marker {
+  color: var(--teal-text);
 }
 
 .assistant-text p,
@@ -1332,7 +1358,7 @@ button:disabled {
   margin: 0 0 8px;
 }
 
-.assistant-text > :last-child {
+.assistant-text> :last-child {
   margin-bottom: 0;
 }
 
@@ -1343,8 +1369,8 @@ button:disabled {
 
 .assistant-text code {
   padding: 1px 5px;
-  border-radius: 4px;
-  background: var(--well);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 6%);
   color: var(--amber-text);
   font-family: var(--mono);
   font-size: 12px;
@@ -1353,9 +1379,9 @@ button:disabled {
 .assistant-text pre {
   overflow: auto;
   padding: 10px 12px;
-  border-radius: 8px;
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--ring);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
   font: 12px/1.5 var(--mono);
 }
 
@@ -1365,21 +1391,36 @@ button:disabled {
   color: var(--text);
 }
 
+/* Steps read as a timeline: a hairline joins each step to the one before it. */
 .assistant-tool {
+  position: relative;
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 10px;
   color: var(--text-muted);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 16px;
   overflow-wrap: anywhere;
 }
 
+.assistant-tool+.assistant-tool::before {
+  content: "";
+  position: absolute;
+  left: 7.5px;
+  bottom: calc(100% + 1px);
+  width: 1px;
+  height: 10px;
+  background: var(--ring-strong);
+}
+
 .assistant-tool svg {
-  flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
-  margin-top: 1px;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.assistant-tool.running {
+  color: var(--text-strong);
 }
 
 .assistant-tool.running svg {
@@ -1398,35 +1439,48 @@ button:disabled {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 9px 11px;
-  border-radius: 8px;
-  box-shadow: inset 0 0 0 1px rgb(255 107 107 / 45%);
+  padding: 2px 0 2px 12px;
+  border-left: 1px solid var(--red);
   color: var(--text);
   font-size: 12px;
-  line-height: 1.45;
+  line-height: 1.5;
   overflow-wrap: anywhere;
 }
 
 .assistant-error svg {
-  flex: 0 0 auto;
+  flex: none;
   width: 15px;
   height: 15px;
+  margin-top: 1px;
   color: var(--red);
 }
 
 .assistant-notice {
-  color: var(--text-muted);
-  font-size: 12px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.assistant-notice::before,
+.assistant-notice::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--ring);
 }
 
 .assistant-changes {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--chrome);
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--ring-strong);
   font-size: 12px;
 }
@@ -1436,31 +1490,41 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  color: var(--text-strong);
+}
+
+.assistant-changes-head strong {
+  color: var(--amber-text);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  word-spacing: 0.14em;
+  text-transform: uppercase;
 }
 
 .assistant-undo {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 28px;
+  height: 26px;
   padding: 0 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 999px;
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--btn-ring);
+  box-shadow: inset 0 0 0 1px var(--ring-bright);
   color: var(--text-strong);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   cursor: pointer;
   transition:
     background-color 0.3s ease,
-    box-shadow 0.3s ease;
+    box-shadow 0.3s ease,
+    color 0.3s ease;
 }
 
 .assistant-undo:hover {
-  background: var(--btn-hover);
-  box-shadow: inset 0 0 0 1px var(--btn-ring-hover);
+  background: #fff;
+  box-shadow: inset 0 0 0 1px #fff;
+  color: #000;
 }
 
 .assistant-undo svg,
@@ -1569,196 +1633,394 @@ button:disabled {
   color: var(--text-muted);
 }
 
-.assistant-empty p {
-  margin: 0 0 12px;
+.assistant-empty {
+  display: grid;
+  gap: 14px;
+  padding-top: 8px;
+}
+
+.assistant-hero {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 34px;
+  font-weight: 450;
+  line-height: 1;
+  letter-spacing: -0.057em;
+}
+
+.assistant-hero .accent,
+.assistant-title h3 .accent {
+  font-size: 1.1em;
+  letter-spacing: -0.03em;
+}
+
+.assistant-caption,
+.assistant-title p {
+  margin: 0;
   color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 10.5px;
+  line-height: 16px;
+  letter-spacing: 0.03em;
+  word-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.assistant-caption strong {
+  color: var(--text-strong);
+  font-weight: 600;
 }
 
 .assistant-suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  border-top: 1px solid var(--ring);
+  list-style: none;
+}
+
+.assistant-suggestions li {
+  border-bottom: 1px solid var(--ring);
+  animation: assistant-rise 0.6s var(--ease) both;
+  animation-delay: calc(250ms + var(--i, 0) * 80ms);
 }
 
 .assistant-suggestions button {
-  padding: 6px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 2px;
   border: 0;
-  border-radius: 8px;
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--btn-ring);
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
   text-align: left;
   cursor: pointer;
-  transition: box-shadow 0.3s ease;
+  transition: color 0.3s ease;
+}
+
+.assistant-suggestions span {
+  position: relative;
+}
+
+/* The underline wipes in from the left. */
+.assistant-suggestions span::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.5s var(--ease);
+}
+
+.assistant-suggestions svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--teal-text);
+  transition: transform 0.4s var(--ease);
 }
 
 .assistant-suggestions button:hover {
-  background: var(--btn-hover);
-  box-shadow: inset 0 0 0 1px var(--btn-ring-hover);
+  color: var(--text-strong);
+}
+
+.assistant-suggestions button:hover span::after {
+  transform: scaleX(1);
+}
+
+.assistant-suggestions button:hover svg {
+  transform: translateX(3px);
 }
 
 .assistant-composer {
-  display: grid;
-  gap: 8px;
-  padding: 10px 12px;
+  padding: 10px 12px 12px;
   border-top: 1px solid var(--ring);
   background: var(--surface);
 }
 
-.assistant-picker {
+.assistant-box {
+  display: grid;
+  gap: 6px;
+  padding: 10px 8px 8px 14px;
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
+  transition: box-shadow 0.3s ease;
+}
+
+.assistant-box:focus-within {
+  box-shadow: inset 0 0 0 1px var(--ring-bright);
+}
+
+.assistant-box textarea {
+  width: 100%;
+  min-height: 40px;
+  max-height: 160px;
+  padding: 0 6px 0 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-strong);
+  caret-color: var(--amber-text);
+  font: 13px/1.5 var(--sans);
+  resize: none;
+}
+
+.assistant-box textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.assistant-tags {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
-.assistant-picker select {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 28px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 8px;
-  outline: 0;
-  background: var(--well);
+.assistant-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 2px 0 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--chrome);
   box-shadow: inset 0 0 0 1px var(--ring-strong);
-  color: var(--text);
+  color: var(--amber-text);
+  font-family: var(--mono);
   font-size: 11px;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.assistant-picker select:first-child {
-  flex-grow: 1.6;
-}
-
-.assistant-picker select:focus {
-  box-shadow: inset 0 0 0 1px var(--focus);
-}
-
-.assistant-input {
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
-}
-
-.assistant-composer textarea {
-  flex: 1;
-  min-width: 0;
-  min-height: 42px;
-  max-height: 160px;
-  padding: 10px 12px;
+.assistant-tag button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
   border: 0;
-  border-radius: 12px;
-  outline: 0;
-  background: var(--well);
-  box-shadow: inset 0 0 0 1px var(--ring-strong);
-  color: var(--text-strong);
-  caret-color: var(--amber-text);
-  font: 13px/1.45 var(--sans);
-  resize: vertical;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
 }
 
-.assistant-composer textarea:focus {
+.assistant-tag button:hover {
+  background: var(--btn-hover);
+  color: var(--text-strong);
+}
+
+.assistant-tag svg {
+  width: 11px;
+  height: 11px;
+}
+
+.assistant-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-left: -6px;
+}
+
+/* Pickers read as quiet captions; the select fills the chip, so any part of it opens the menu. */
+.assistant-chip {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  min-width: 0;
+  border-radius: 999px;
+  color: var(--text-muted);
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+.assistant-chip.model {
+  flex: 0 1 auto;
+}
+
+.assistant-chip:hover,
+.assistant-chip:focus-within {
+  background: var(--btn-hover);
+  color: var(--text-strong);
+}
+
+.assistant-chip svg {
+  position: absolute;
+  left: 8px;
+  width: 13px;
+  height: 13px;
+  color: var(--teal-text);
+  pointer-events: none;
+}
+
+.assistant-chip select {
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 20px 0 26px;
+  border: 0;
+  border-radius: 999px;
+  outline: 0;
+  appearance: none;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M.5.5 4 4 7.5.5' fill='none' stroke='%23f5f6f6' stroke-opacity='.5'/%3E%3C/svg%3E") no-repeat right 8px center / 7px 5px;
+  color: inherit;
+  font: 600 11px/26px var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  field-sizing: content;
+}
+
+.assistant-chip select:focus-visible {
   box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+.assistant-chip select:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.assistant-chip option,
+.assistant-chip optgroup {
+  background: #0b0d10;
+  color: var(--text-strong);
 }
 
 .assistant-send {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 30px;
+  height: 30px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 50%;
   background: var(--primary);
   color: var(--on-primary);
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition:
+    background-color 0.3s ease,
+    box-shadow 0.3s ease,
+    color 0.3s ease;
 }
 
 .assistant-send:hover:not(:disabled) {
-  background: var(--primary-hover);
+  background: #fff;
+  color: #000;
+}
+
+.assistant-send:disabled {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
+  color: var(--text-faint);
+  cursor: default;
 }
 
 .assistant-send svg {
-  width: 17px;
-  height: 17px;
+  width: 14px;
+  height: 14px;
 }
 
-.assistant-stop {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-  height: 40px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 8px;
+.assistant-send.stop {
   background: transparent;
-  box-shadow: inset 0 0 0 1px var(--btn-ring);
+  box-shadow: inset 0 0 0 1px var(--ring-bright);
   color: var(--text-strong);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition:
-    background-color 0.15s ease,
-    box-shadow 0.15s ease;
 }
 
-.assistant-stop:hover {
-  background: var(--btn-hover);
-  box-shadow: inset 0 0 0 1px var(--btn-ring-hover);
+.assistant-send.stop svg {
+  width: 11px;
+  height: 11px;
 }
 
-.assistant-stop svg {
-  width: 13px;
-  height: 13px;
+/* While the assistant works, a ring beats on the one button that can interrupt it. */
+.assistant-send.stop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--amber-text);
+  animation: assistant-beat 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes assistant-beat {
+  from {
+    opacity: 0.9;
+    transform: scale(1);
+  }
+
+  to {
+    opacity: 0;
+    transform: scale(1.7);
+  }
 }
 
 .assistant-settings {
   display: grid;
-  gap: 14px;
+  gap: 16px;
 }
 
-.assistant-settings-intro {
+.assistant-title {
+  display: grid;
+  gap: 10px;
+  padding: 4px 0 2px;
+}
+
+.assistant-title h3 {
   margin: 0;
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-size: 26px;
+  font-weight: 450;
+  line-height: 1;
+  letter-spacing: -0.057em;
 }
 
 .assistant-field {
   display: grid;
-  gap: 5px;
+  gap: 6px;
 }
 
-.assistant-field > span {
+.assistant-field>span {
   color: var(--text-muted);
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   letter-spacing: 0.08em;
+  word-spacing: 0.14em;
   text-transform: uppercase;
 }
 
 .assistant-field :is(input, select) {
-  height: 34px;
+  height: 36px;
   min-width: 0;
-  padding: 0 10px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 12px;
   outline: 0;
-  background: var(--well);
+  background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--ring-strong);
   color: var(--text-strong);
   caret-color: var(--amber-text);
   font-size: 13px;
+  transition: box-shadow 0.3s ease;
 }
 
 .assistant-field :is(input, select):focus {
-  box-shadow: inset 0 0 0 1px var(--focus);
+  box-shadow: inset 0 0 0 1px var(--ring-bright);
 }
 
 .assistant-field [aria-invalid="true"] {
@@ -1797,9 +2059,9 @@ button:disabled {
 .assistant-consent {
   display: grid;
   gap: 8px;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--chrome);
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--ring-strong);
 }
 
@@ -1827,7 +2089,7 @@ button:disabled {
 .assistant-services,
 .assistant-models {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1838,34 +2100,85 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 4px;
-  padding: 8px 6px 8px 12px;
-  border-radius: 10px;
-  background: var(--chrome);
+  padding: 12px 8px 12px 16px;
+  border-radius: 16px;
+  background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--ring-strong);
+  transition: box-shadow 0.3s ease;
+}
+
+.assistant-service:hover {
+  box-shadow: inset 0 0 0 1px var(--ring-bright);
 }
 
 .assistant-service div {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
 }
 
 .assistant-service strong {
   color: var(--text-strong);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
 }
 
 .assistant-service small {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 11px;
+  font-family: var(--mono);
+  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.assistant-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--ring-bright);
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.3s ease,
+    box-shadow 0.3s ease,
+    color 0.3s ease;
+}
+
+.assistant-pill:hover:not(:disabled) {
+  background: #fff;
+  box-shadow: inset 0 0 0 1px #fff;
+  color: #000;
+}
+
+.assistant-pill:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.assistant-pill svg {
+  width: 13px;
+  height: 13px;
+}
+
 .assistant-delete-confirm {
+  box-shadow: inset 0 0 0 1px var(--red);
   color: var(--red);
+}
+
+.assistant-delete-confirm:hover:not(:disabled) {
+  background: var(--red);
+  box-shadow: inset 0 0 0 1px var(--red);
 }
 
 .assistant-add-service {
@@ -1877,10 +2190,10 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  padding: 2px 2px 2px 10px;
-  border-radius: 8px;
-  background: var(--chrome);
-  box-shadow: inset 0 0 0 1px var(--ring);
+  padding: 2px 2px 2px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
 }
 
 .assistant-models code {
@@ -1907,19 +2220,22 @@ button:disabled {
 
 .assistant-primary {
   height: 30px;
-  padding: 0 16px;
+  padding: 0 18px;
   border: 0;
-  border-radius: 8px;
+  border-radius: 999px;
   background: var(--primary);
   color: var(--on-primary);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.15s ease;
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
 }
 
-.assistant-primary:hover {
-  background: var(--primary-hover);
+.assistant-primary:hover:not(:disabled) {
+  background: #fff;
+  color: #000;
 }
 
 .pdf-search {
@@ -2025,7 +2341,7 @@ button:disabled {
   box-shadow: inset 0 0 0 1px var(--ring-strong);
 }
 
-.preview-error > svg {
+.preview-error>svg {
   color: var(--red);
 }
 
@@ -2090,7 +2406,7 @@ button:disabled {
   background: var(--hover);
 }
 
-.diagnostics-summary > span {
+.diagnostics-summary>span {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -2104,14 +2420,11 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.diagnostics-summary > span:first-child svg {
+.diagnostics-summary>span:first-child svg {
   color: var(--teal-text);
 }
 
-.diagnostics:has(.diagnostic-list)
-  .diagnostics-summary
-  > span:first-child
-  svg {
+.diagnostics:has(.diagnostic-list) .diagnostics-summary>span:first-child svg {
   color: var(--red);
 }
 
@@ -2120,11 +2433,11 @@ button:disabled {
   font-size: 11px;
 }
 
-.diagnostics-meta > svg {
+.diagnostics-meta>svg {
   transition: transform 0.6s var(--ease);
 }
 
-.diagnostics.open .diagnostics-meta > svg {
+.diagnostics.open .diagnostics-meta>svg {
   transform: rotate(180deg);
 }
 
@@ -2163,12 +2476,12 @@ button:disabled {
   background: var(--hover);
 }
 
-.diagnostic-list button > svg {
+.diagnostic-list button>svg {
   margin-top: 1px;
   color: var(--red);
 }
 
-.diagnostic-list button > span {
+.diagnostic-list button>span {
   display: grid;
   gap: 3px;
 }
@@ -2181,7 +2494,7 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.diagnostic-list button > span > span {
+.diagnostic-list button>span>span {
   font-size: 12px;
 }
 
@@ -2198,7 +2511,7 @@ button:disabled {
   font-size: 12px;
 }
 
-.raw-log > button {
+.raw-log>button {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2216,7 +2529,7 @@ button:disabled {
   transition: background-color 0.15s ease;
 }
 
-.raw-log > button:hover {
+.raw-log>button:hover {
   background: var(--hover);
 }
 
@@ -2650,7 +2963,7 @@ button:disabled {
   }
 
   .account-button span,
-  .brand > span:last-child {
+  .brand>span:last-child {
     display: none;
   }
 
@@ -2723,17 +3036,20 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   *,
   *::before,
   *::after {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+    animation-delay: 0s !important;
     animation-iteration-count: 1 !important;
   }
 }
 
 @media (forced-colors: active) {
+
   .freshness,
   .toolbar-button,
   .account-button,
@@ -2744,15 +3060,16 @@ button:disabled {
   .pdf-edit-popover textarea,
   .pdf-edit-apply,
   .assistant-field :is(input, select),
-  .assistant-picker select,
+  .assistant-chip select,
+  .assistant-tag,
+  .assistant-box,
+  .assistant-user,
   .assistant-service,
   .assistant-models li,
-  .assistant-composer textarea,
   .assistant-send,
-  .assistant-stop,
+  .assistant-pill,
   .assistant-undo,
   .assistant-primary,
-  .assistant-suggestions button,
   .assistant-changes,
   .assistant-consent,
   .compile-button,

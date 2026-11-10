@@ -1112,6 +1112,36 @@ function foldSearchText(value: string) {
   return folded.trim();
 }
 
+async function loadPdfjs() {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/build/pdf.worker.min.mjs",
+    import.meta.url,
+  ).toString();
+  return pdfjs;
+}
+
+// Plain text per page for the assistant, keeping the PDF's line breaks.
+async function pdfPageTexts(bytes: Uint8Array<ArrayBuffer>) {
+  const pdfjs = await loadPdfjs();
+  const pdfDocument = await pdfjs.getDocument({ data: bytes.slice() }).promise;
+  try {
+    const pages: string[] = [];
+    for (let number = 1; number <= pdfDocument.numPages; number += 1) {
+      const content = await (await pdfDocument.getPage(number)).getTextContent();
+      let text = "";
+      for (const item of content.items) {
+        if (!("str" in item)) continue;
+        text += item.hasEOL ? `${item.str}\n` : item.str;
+      }
+      pages.push(text.replace(/[ \t]+\n/g, "\n").trim());
+    }
+    return pages;
+  } finally {
+    await pdfDocument.destroy();
+  }
+}
+
 async function readPdfPageText(
   pdfDocument: PDFDocumentProxy,
   pageNumber: number,
@@ -1448,11 +1478,7 @@ function PdfPreview({
     async function openPdf() {
       try {
         setPreviewError("");
-        const pdfjs = await import("pdfjs-dist");
-        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-          "pdfjs-dist/build/pdf.worker.min.mjs",
-          import.meta.url,
-        ).toString();
+        const pdfjs = await loadPdfjs();
         loadingTask = pdfjs.getDocument({ data: activeBytes.slice() });
         const document = await loadingTask.promise;
         const sizes = await Promise.all(
@@ -2655,6 +2681,12 @@ export default function App() {
     log: "",
   }));
   const busyRef = useRef(false);
+  // The latest PDF and the project it was compiled from, set as soon as a compile succeeds.
+  const compiledPdfRef = useRef<{
+    bytes: Uint8Array<ArrayBuffer>;
+    project: typeof project;
+  } | null>(null);
+  const pdfTextRef = useRef<{ bytes: Uint8Array<ArrayBuffer>; pages: string[] } | null>(null);
   const documentNameRef = useRef(documentName);
   // The project and name that Google Drive last confirmed as saved.
   const syncedRef = useRef<DriveSnapshot>({ project, documentName });
@@ -3232,13 +3264,21 @@ export default function App() {
         await flushDriveSave().catch(() => undefined);
         setDriveProjectId("");
         setDriveDirty(false);
-        loadProject(
+        const snapshot = loadProject(
           importedFiles,
           mainFile,
           mainFile,
           file.name.replace(/\.(zip|tex)$/i, ""),
           "Project imported",
         );
+        // This browser keeps only the text files, so a signed-in import goes
+        // to Google Drive as a new project straight away.
+        if (googleSession) {
+          void runDriveAction(async (session) => {
+            setDriveProjectId(await uploadProject(session, snapshot, ""));
+            setDriveReady(true);
+          });
+        }
       } catch (error) {
         reportError(
           error instanceof Error ? error.message : "The project could not be imported.",
@@ -3246,7 +3286,7 @@ export default function App() {
         );
       }
     },
-    [flushDriveSave, loadProject, reportError],
+    [flushDriveSave, googleSession, loadProject, reportError, runDriveAction, uploadProject],
   );
 
   const downloadPdf = useCallback(() => {
@@ -3348,7 +3388,9 @@ export default function App() {
       const duration = performance.now() - startedAt;
       if (result.success) {
         const label = `Compiled in ${(duration / 1000).toFixed(1)} s`;
-        setPdfBytes(result.pdf.slice());
+        const pdf = result.pdf.slice();
+        compiledPdfRef.current = { bytes: pdf, project };
+        setPdfBytes(pdf);
         setSyncTexData(result.syncTexData ?? null);
         setCompiledRevision(revisionSnapshot);
         setLogs(result.log ? result.log.split("\n").slice(-2000) : []);
@@ -3417,6 +3459,7 @@ export default function App() {
   useLayoutEffect(() => {
     projectRef.current = project;
     documentNameRef.current = documentName;
+    if (!pdfBytes) compiledPdfRef.current = null;
     compileRef.current = compile;
     busyRef.current = busy;
   });
@@ -3435,6 +3478,18 @@ export default function App() {
           await new Promise((resolve) => window.setTimeout(resolve, 200));
         }
         return compileRef.current();
+      },
+      readPdf: async () => {
+        const compiled = compiledPdfRef.current;
+        if (!compiled) return null;
+        if (pdfTextRef.current?.bytes !== compiled.bytes) {
+          pdfTextRef.current = { bytes: compiled.bytes, pages: await pdfPageTexts(compiled.bytes) };
+        }
+        const current = projectRef.current;
+        return {
+          pages: pdfTextRef.current.pages,
+          stale: compiled.project.files !== current.files || compiled.project.mainFile !== current.mainFile,
+        };
       },
       isTextPath,
       normalizePath: normalizeProjectPath,
@@ -3750,6 +3805,8 @@ export default function App() {
   const googleActive = Boolean(googleSession) && driveState !== "expired";
   // Until the linked project is downloaded, actions on the Projects screen wait.
   const driveSyncing = Boolean(googleSession) && !driveReady && driveState === "idle";
+  // An import replaces the open project, so it waits for Drive to finish loading or saving.
+  const importBlocked = googleStatus === "checking" || driveBusy || driveSyncing;
   const driveLabel =
     driveProjectId && googleSession
       ? {
@@ -3892,7 +3949,8 @@ export default function App() {
           className="toolbar-button"
           type="button"
           onClick={() => importInputRef.current?.click()}
-          title="Import a ZIP project or LaTeX file"
+          disabled={importBlocked}
+          title={importBlocked ? "Waiting for Google Drive" : "Import a ZIP project or LaTeX file"}
         >
           <FolderOpen />
           <span>Import</span>
@@ -4029,6 +4087,7 @@ export default function App() {
                 type="button"
                 role="menuitem"
                 tabIndex={-1}
+                disabled={importBlocked}
                 onClick={() =>
                   runFileMenuAction(() => importInputRef.current?.click())
                 }

@@ -1,9 +1,14 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
+  ArrowRight,
+  ArrowUp,
+  At,
+  Brain,
   Check,
+  Cpu,
   GearSix,
-  PaperPlaneRight,
+  NotePencil,
   PencilSimple,
   Plus,
   Sparkle,
@@ -121,18 +126,18 @@ const PRESETS: {
   },
 ];
 
-const THINKING_LEVELS: { value: ThinkingLevel; label: string }[] = [
-  { value: "default", label: "Default thinking" },
-  { value: "low", label: "Low thinking" },
-  { value: "medium", label: "Medium thinking" },
-  { value: "high", label: "High thinking" },
+const THINKING_LEVELS: { value: ThinkingLevel; label: string; short: string }[] = [
+  { value: "default", label: "Default thinking", short: "Default" },
+  { value: "low", label: "Low thinking", short: "Low" },
+  { value: "medium", label: "Medium thinking", short: "Medium" },
+  { value: "high", label: "High thinking", short: "High" },
 ];
 
 const SUGGESTIONS = [
+  "Summarize the PDF, section by section",
   "Fix the compile errors",
   "Proofread the introduction and fix typos",
   "Add a short conclusion section",
-  "Explain what this document is about",
 ];
 
 function hostOf(baseUrl: string) {
@@ -443,9 +448,13 @@ function ProviderForm({
         });
       }}
     >
-      <p className="assistant-settings-intro">
-        {initial ? `Edit ${initial.name}.` : "Add a service that offers the OpenAI chat completions API with tool calling."}
-      </p>
+      <header className="assistant-title">
+        <h3>
+          {initial ? "Edit " : "Add a "}
+          <span className="accent">{initial ? initial.name : "service"}</span>
+        </h3>
+        <p>Any service with the OpenAI chat completions API and tool calling</p>
+      </header>
 
       <label className="assistant-field">
         <span>Service</span>
@@ -550,7 +559,7 @@ function ProviderForm({
                 addModel();
               }}
             />
-            <button type="button" className="secondary-button" onClick={addModel} disabled={!draftModel}>
+            <button type="button" className="assistant-pill" onClick={addModel} disabled={!draftModel}>
               <Plus aria-hidden="true" />
               Add
             </button>
@@ -561,8 +570,9 @@ function ProviderForm({
 
       <div className={`assistant-consent${submitted && !consent ? " invalid" : ""}`}>
         <p>
-          Each time you send a message with this service, your messages, the text of your project files and the
-          compile log are sent to <strong>{host || "the service above"}</strong>. Its API key is sent only there.
+          Each time you send a message with this service, your messages, the text of your project files and
+          compiled PDF, and the compile log are sent to <strong>{host || "the service above"}</strong>. Its API key
+          is sent only there.
           Nothing is sent until you send a message.
         </p>
         <label className="assistant-check">
@@ -580,7 +590,7 @@ function ProviderForm({
       <div className="assistant-settings-actions">
         <span className="assistant-spacer" />
         {onCancel && (
-          <button type="button" className="secondary-button" onClick={onCancel}>
+          <button type="button" className="assistant-pill" onClick={onCancel}>
             Cancel
           </button>
         )}
@@ -613,11 +623,15 @@ function ServiceList({
 
   return (
     <div className="assistant-settings">
-      <p className="assistant-settings-intro">
-        Add each AI service you use with its API key and your models, then pick the model and thinking level for
-        each message in the chat.
-        {signedIn && " These services, their API keys and your models are also saved to your Google Drive."}
-      </p>
+      <header className="assistant-title">
+        <h3>
+          Your <span className="accent">services</span>
+        </h3>
+        <p>
+          Each with its API key and your models. Pick the model and thinking level for each message in the chat.
+          {signedIn && " Saved to your Google Drive."}
+        </p>
+      </header>
 
       <ul className="assistant-services">
         {config.providers.map((provider) => (
@@ -642,7 +656,7 @@ function ServiceList({
             {confirmId === provider.id ? (
               <button
                 type="button"
-                className="secondary-button assistant-delete-confirm"
+                className="assistant-pill assistant-delete-confirm"
                 autoFocus
                 onClick={() => {
                   setConfirmId("");
@@ -667,7 +681,7 @@ function ServiceList({
         ))}
       </ul>
 
-      <button type="button" className="secondary-button assistant-add-service" onClick={onAdd}>
+      <button type="button" className="assistant-pill assistant-add-service" onClick={onAdd}>
         <Plus aria-hidden="true" />
         Add a service
       </button>
@@ -767,6 +781,12 @@ export default function AssistantPanel({
   const [editing, setEditing] = useState<Provider | "new" | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [draft, setDraft] = useState("");
+  const [tagged, setTagged] = useState<string[]>([]);
+  const textPaths = () =>
+    Object.keys(host.getProject().files)
+      .filter((path) => host.isTextPath(path))
+      .sort((a, b) => a.localeCompare(b));
+  const [paths, setPaths] = useState(textPaths);
   const [running, setRunning] = useState(false);
   const historyRef = useRef<ChatMessage[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -836,13 +856,18 @@ export default function AssistantPanel({
     const prompt = text.trim();
     if (!prompt || running || !active) return;
     const before = host.getProject();
+    // Files tagged in the picker, plus any @path typed in the message that names a project file.
+    const mentioned = [...prompt.matchAll(/@([^\s@]+)/g)].map((match) => match[1].replace(/[.,;:!?)]+$/, ""));
+    const tags = [...new Set([...tagged, ...mentioned])].filter((path) => path in before.files);
     const controller = new AbortController();
     abortRef.current = controller;
     stickRef.current = true;
     setDraft("");
+    setTagged([]);
     setRunning(true);
     const level = THINKING_LEVELS.find((item) => item.value === active.thinking)?.label ?? "";
-    push({ kind: "user", text: prompt, meta: `${active.model} · ${level}` });
+    const tagNote = tags.length ? ` · ${tags.map((path) => `@${path}`).join(" ")}` : "";
+    push({ kind: "user", text: prompt, meta: `${active.model} · ${level}${tagNote}` });
 
     let replyId: number | null = null;
     const toolItems = new Map<string, number>();
@@ -858,6 +883,7 @@ export default function AssistantPanel({
         host,
         history: compactHistory(historyRef.current),
         prompt,
+        tagged: tags,
         signal: controller.signal,
         onEvent: (event) => {
           if (event.type === "text") {
@@ -946,7 +972,7 @@ export default function AssistantPanel({
             aria-label="New chat"
             title="New chat"
           >
-            <Plus />
+            <NotePencil />
           </button>
           <button
             className={`icon-button${settingsOpen ? " active" : ""}`}
@@ -1014,33 +1040,40 @@ export default function AssistantPanel({
           >
             {items.length === 0 ? (
               <div className="assistant-empty">
-                <p>
-                  Ask in plain words. The assistant can read, create, edit, rename and delete project files,
-                  and compile to check its work. Each request can be undone.
+                <h3 className="assistant-hero">
+                  Ask the <span className="accent">PDF</span>
+                </h3>
+                <p className="assistant-caption">
+                  <strong>Reads your compiled PDF before every answer</strong>
+                  <br />
+                  Edits, creates and renames files. Tag a file with @ to say where a change goes. Every
+                  request can be undone.
                 </p>
-                <div className="assistant-suggestions">
-                  {SUGGESTIONS.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      type="button"
-                      onClick={() => {
-                        setDraft(suggestion);
-                        inputRef.current?.focus();
-                      }}
-                    >
-                      {suggestion}
-                    </button>
+                <ul className="assistant-suggestions">
+                  {SUGGESTIONS.map((suggestion, index) => (
+                    <li key={suggestion} style={{ "--i": index } as React.CSSProperties}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraft(suggestion);
+                          inputRef.current?.focus();
+                        }}
+                      >
+                        <span>{suggestion}</span>
+                        <ArrowRight aria-hidden="true" />
+                      </button>
+                    </li>
                   ))}
-                </div>
+                </ul>
               </div>
             ) : (
               items.map((item) => {
                 switch (item.kind) {
                   case "user":
                     return (
-                      <div key={item.id} className="assistant-user">
-                        {item.text}
-                        <small className="assistant-model">{item.meta}</small>
+                      <div key={item.id} className="assistant-turn">
+                        <div className="assistant-user">{item.text}</div>
+                        <small className="assistant-meta">{item.meta}</small>
                       </div>
                     );
                   case "assistant":
@@ -1085,48 +1118,29 @@ export default function AssistantPanel({
               void send(draft);
             }}
           >
-            {active && (
-              <div className="assistant-picker">
-                <select
-                  aria-label="Model for the next message"
-                  value={`${usable.indexOf(active.provider)}:${active.provider.models.indexOf(active.model)}`}
-                  disabled={running}
-                  onChange={(event) => {
-                    const [providerIndex, modelIndex] = event.target.value.split(":").map(Number);
-                    const provider = usable[providerIndex];
-                    if (provider) choose({ providerId: provider.id, model: provider.models[modelIndex] });
-                  }}
-                >
-                  {usable.map((provider, providerIndex) => (
-                    <optgroup key={provider.id} label={provider.name}>
-                      {provider.models.map((model, modelIndex) => (
-                        <option key={model} value={`${providerIndex}:${modelIndex}`}>
-                          {model}
-                        </option>
-                      ))}
-                    </optgroup>
+            <div className="assistant-box">
+              {tagged.length > 0 && (
+                <div className="assistant-tags">
+                  {tagged.map((path) => (
+                    <span key={path} className="assistant-tag">
+                      @{path}
+                      <button
+                        type="button"
+                        aria-label={`Untag ${path}`}
+                        title="Untag"
+                        onClick={() => setTagged(tagged.filter((item) => item !== path))}
+                      >
+                        <X aria-hidden="true" />
+                      </button>
+                    </span>
                   ))}
-                </select>
-                <select
-                  aria-label="Thinking level for the next message"
-                  value={active.thinking}
-                  disabled={running}
-                  onChange={(event) => choose({ thinking: event.target.value as ThinkingLevel })}
-                >
-                  {THINKING_LEVELS.map((level) => (
-                    <option key={level.value} value={level.value}>
-                      {level.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <div className="assistant-input">
+                </div>
+              )}
               <textarea
                 ref={inputRef}
                 value={draft}
                 rows={2}
-                placeholder="Ask the assistant to edit, fix or explain your document"
+                placeholder="Ask about the PDF, or ask for a change"
                 aria-label="Message the assistant"
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
@@ -1136,26 +1150,95 @@ export default function AssistantPanel({
                   }
                 }}
               />
-              {running ? (
-                <button
-                  type="button"
-                  className="assistant-stop"
-                  onClick={() => abortRef.current?.abort()}
-                >
-                  <Stop weight="fill" aria-hidden="true" />
-                  Stop
-                </button>
-              ) : (
-                <button
-                  type="submit"
-                  className="assistant-send"
-                  disabled={!draft.trim()}
-                  aria-label="Send message"
-                  title="Send (Enter)"
-                >
-                  <PaperPlaneRight weight="fill" aria-hidden="true" />
-                </button>
-              )}
+              <div className="assistant-bar">
+                {active && (
+                  <>
+                    <span className="assistant-chip model" title="Model for the next message">
+                      <Cpu aria-hidden="true" />
+                      <select
+                        aria-label="Model for the next message"
+                        value={`${usable.indexOf(active.provider)}:${active.provider.models.indexOf(active.model)}`}
+                        disabled={running}
+                        onChange={(event) => {
+                          const [providerIndex, modelIndex] = event.target.value.split(":").map(Number);
+                          const provider = usable[providerIndex];
+                          if (provider) choose({ providerId: provider.id, model: provider.models[modelIndex] });
+                        }}
+                      >
+                        {usable.map((provider, providerIndex) => (
+                          <optgroup key={provider.id} label={provider.name}>
+                            {provider.models.map((model, modelIndex) => (
+                              <option key={model} value={`${providerIndex}:${modelIndex}`}>
+                                {model}
+                              </option>
+                            ))}
+                          </optgroup>
+                        ))}
+                      </select>
+                    </span>
+                    <span className="assistant-chip" title="Thinking level for the next message">
+                      <Brain aria-hidden="true" />
+                      <select
+                        aria-label="Thinking level for the next message"
+                        value={active.thinking}
+                        disabled={running}
+                        onChange={(event) => choose({ thinking: event.target.value as ThinkingLevel })}
+                      >
+                        {THINKING_LEVELS.map((level) => (
+                          <option key={level.value} value={level.value}>
+                            {level.short}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
+                  </>
+                )}
+                <span className="assistant-chip" title="Tag a file for the assistant to change">
+                  <At aria-hidden="true" />
+                  <select
+                    aria-label="Tag a file for the assistant to change"
+                    value=""
+                    disabled={running}
+                    onFocus={() => setPaths(textPaths())}
+                    onMouseDown={() => setPaths(textPaths())}
+                    onChange={(event) => {
+                      const path = event.target.value;
+                      if (path && !tagged.includes(path)) setTagged([...tagged, path]);
+                    }}
+                  >
+                    <option value="">Tag a file</option>
+                    {paths
+                      .filter((path) => !tagged.includes(path))
+                      .map((path) => (
+                        <option key={path} value={path}>
+                          {path}
+                        </option>
+                      ))}
+                  </select>
+                </span>
+                <span className="assistant-spacer" />
+                {running ? (
+                  <button
+                    type="button"
+                    className="assistant-send stop"
+                    onClick={() => abortRef.current?.abort()}
+                    aria-label="Stop"
+                    title="Stop"
+                  >
+                    <Stop weight="fill" aria-hidden="true" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    className="assistant-send"
+                    disabled={!draft.trim()}
+                    aria-label="Send message"
+                    title="Send (Enter)"
+                  >
+                    <ArrowUp weight="bold" aria-hidden="true" />
+                  </button>
+                )}
+              </div>
             </div>
           </form>
         </>
