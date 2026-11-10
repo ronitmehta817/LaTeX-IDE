@@ -104,6 +104,20 @@ function crossSite(request, url) {
   return Boolean(origin) && origin !== url.origin;
 }
 
+// Errors are the only thing this Worker logs. Each one is a single JSON line in
+// Cloudflare's Workers Logs, so it can be filtered by its event name.
+function logError(event, fields) {
+  console.error(JSON.stringify({ event, ...fields }));
+}
+
+function clip(value, length = 300) {
+  return String(value ?? "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, length);
+}
+
 async function requestTokens(env, params) {
   const response = await fetch(TOKEN_URL, {
     method: "POST",
@@ -144,7 +158,7 @@ async function callback(request, env, url) {
   const [state, verifier, consent] = readCookie(request, HANDSHAKE_COOKIE).split(".");
   const cleared = cookie(url, HANDSHAKE_COOKIE, "", 0);
   const fail = (code, detail) => {
-    console.log(JSON.stringify({ event: "google_sign_in_failed", code, detail }));
+    if (code !== "cancelled") logError("google_sign_in_failed", { code, detail });
     return redirect(`/?google_error=${code}`, [cleared]);
   };
 
@@ -194,9 +208,11 @@ async function token(request, env, url) {
   });
   if (tokens.body.error === "invalid_grant") return signedOut();
   if (!tokens.ok || !tokens.body.access_token) {
-    console.log(
-      JSON.stringify({ event: "google_token_failed", status: tokens.status, error: tokens.body.error }),
-    );
+    logError("google_token_failed", {
+      status: tokens.status,
+      error: tokens.body.error,
+      detail: clip(tokens.body.error_description),
+    });
     return json(502, { error: "google_unavailable" });
   }
   return json(
@@ -216,7 +232,7 @@ async function token(request, env, url) {
 const NVIDIA_TARGET = "https://integrate.api.nvidia.com";
 const NVIDIA_PREFIX = "/proxy/nvidia";
 
-function nvidiaProxy(request, url) {
+async function nvidiaProxy(request, url) {
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
@@ -235,61 +251,132 @@ function nvidiaProxy(request, url) {
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("origin");
+  headers.delete("content-length");
 
-  return fetch(targetUrl, {
-    method: request.method,
-    headers,
-    body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
-  }).then((upstream) => {
-    const proxyHeaders = new Headers(upstream.headers);
-    proxyHeaders.set("Access-Control-Allow-Origin", url.origin);
-    return new Response(upstream.body, {
-      status: upstream.status,
-      headers: proxyHeaders,
-    });
-  }).catch((error) => {
-    return new Response(
-      JSON.stringify({ error: { message: `Proxy error: ${error.message || String(error)}` } }),
-      {
-        status: 502,
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": url.origin,
-        },
+  // The body is read once here so a failure can be logged with the model and request size.
+  const body = request.method !== "GET" && request.method !== "HEAD" ? await request.text() : undefined;
+  const failure = {
+    path: targetPath,
+    model: /"model"\s*:\s*"([^"]+)"/.exec(body ?? "")?.[1],
+    requestChars: body?.length,
+  };
+  const started = Date.now();
+
+  let upstream;
+  try {
+    upstream = await fetch(targetUrl, { method: request.method, headers, body });
+  } catch (error) {
+    const message = error.message || String(error);
+    logError("nvidia_proxy_failed", { ...failure, ms: Date.now() - started, message });
+    return new Response(JSON.stringify({ error: { message: `Proxy error: ${message}` } }), {
+      status: 502,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": url.origin,
       },
-    );
+    });
+  }
+
+  const proxyHeaders = new Headers(upstream.headers);
+  proxyHeaders.set("Access-Control-Allow-Origin", url.origin);
+  if (upstream.ok) {
+    return new Response(upstream.body, { status: upstream.status, headers: proxyHeaders });
+  }
+
+  const detail = await upstream.text();
+  logError("nvidia_proxy_error", {
+    ...failure,
+    status: upstream.status,
+    ms: Date.now() - started,
+    detail: clip(detail, 1000),
   });
+  proxyHeaders.delete("content-length");
+  proxyHeaders.delete("content-encoding");
+  return new Response(detail, { status: upstream.status, headers: proxyHeaders });
+}
+
+// The browser calls Gemini, other AI services and Google Drive directly, so this
+// server never sees those errors. The app reports them here instead.
+const CLIENT_SOURCES = new Set(["assistant", "drive"]);
+
+async function logClientError(request, url) {
+  if (request.method !== "POST" || crossSite(request, url)) return json(403, { error: "forbidden" });
+  const text = await request.text();
+  if (text.length > 4000) return json(413, { error: "too_large" });
+  let report;
+  try {
+    report = JSON.parse(text);
+  } catch {
+    return json(400, { error: "invalid_json" });
+  }
+  if (!CLIENT_SOURCES.has(report?.source)) return json(400, { error: "unknown_source" });
+  const fields = {
+    service: clip(report.service, 120),
+    model: clip(report.model, 120),
+    method: clip(report.method, 10),
+    endpoint: clip(report.endpoint, 120),
+    status: Number.isInteger(report.status) ? report.status : null,
+    ms: Number.isFinite(report.ms) ? Math.round(report.ms) : null,
+    message: clip(report.message, 500),
+  };
+  logError(
+    `${report.source}_error`,
+    Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== "" && value !== null)),
+  );
+  return json(204);
+}
+
+async function errorCode(response) {
+  if (!response.headers.get("Content-Type")?.includes("application/json")) return "";
+  const body = await response.clone().json().catch(() => null);
+  return typeof body?.error === "string" ? body.error : "";
+}
+
+async function handle(request, env, url) {
+  // NVIDIA proxy — runs before auth so it works even without Google credentials.
+  if (url.pathname.startsWith(NVIDIA_PREFIX)) {
+    return nvidiaProxy(request, url);
+  }
+  if (url.pathname === "/log/error") return logClientError(request, url);
+
+  const route = `${request.method} ${url.pathname}`;
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.SESSION_SECRET) {
+    return request.method === "GET"
+      ? redirect("/?google_error=not_configured")
+      : json(404, { error: "not_configured" });
+  }
+  try {
+    if (route === "GET /auth/login") return await login(env, url);
+    if (route === "GET /auth/callback") return await callback(request, env, url);
+    if (route === "POST /auth/token") return await token(request, env, url);
+    if (route === "POST /auth/logout") {
+      if (crossSite(request, url)) return json(403, { error: "forbidden" });
+      return json(204, undefined, [cookie(url, SESSION_COOKIE, "", 0)]);
+    }
+    return json(404, { error: "not_found" });
+  } catch (error) {
+    logError("google_auth_error", { route, message: String(error) });
+    return request.method === "GET"
+      ? redirect("/?google_error=failed")
+      : json(502, { error: "google_unavailable" });
+  }
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
-    // NVIDIA proxy — runs before auth so it works even without Google credentials.
-    if (url.pathname.startsWith(NVIDIA_PREFIX)) {
-      return nvidiaProxy(request, url);
+    const started = Date.now();
+    const response = await handle(request, env, url);
+    // Every 4xx and 5xx answer is logged. The NVIDIA proxy logs its own, with NVIDIA's reason.
+    if (response.status >= 400 && !url.pathname.startsWith(NVIDIA_PREFIX)) {
+      logError("http_error", {
+        method: request.method,
+        path: url.pathname,
+        status: response.status,
+        error: await errorCode(response),
+        ms: Date.now() - started,
+      });
     }
-
-    const route = `${request.method} ${url.pathname}`;
-    if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.SESSION_SECRET) {
-      return request.method === "GET"
-        ? redirect("/?google_error=not_configured")
-        : json(404, { error: "not_configured" });
-    }
-    try {
-      if (route === "GET /auth/login") return await login(env, url);
-      if (route === "GET /auth/callback") return await callback(request, env, url);
-      if (route === "POST /auth/token") return await token(request, env, url);
-      if (route === "POST /auth/logout") {
-        if (crossSite(request, url)) return json(403, { error: "forbidden" });
-        return json(204, undefined, [cookie(url, SESSION_COOKIE, "", 0)]);
-      }
-      return json(404, { error: "not_found" });
-    } catch (error) {
-      console.error(JSON.stringify({ event: "google_auth_error", route, message: String(error) }));
-      return request.method === "GET"
-        ? redirect("/?google_error=failed")
-        : json(502, { error: "google_unavailable" });
-    }
+    return response;
   },
 };
