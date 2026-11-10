@@ -138,7 +138,7 @@ const SUGGESTIONS = [
 function hostOf(baseUrl: string) {
   try {
     const url = new URL(baseUrl.trim());
-    if (url.origin === window.location.origin && url.pathname.startsWith(NVIDIA_PROXY_PATH)) {
+    if (url.pathname.startsWith(NVIDIA_PROXY_PATH)) {
       return NVIDIA_HOST;
     }
     return url.host;
@@ -156,6 +156,9 @@ function isLocalUrl(baseUrl: string) {
 }
 
 function presetFor(baseUrl: string) {
+  if (baseUrl.includes(NVIDIA_PROXY_PATH)) {
+    return PRESETS.find((item) => item.id === "nvidia") ?? PRESETS[PRESETS.length - 1];
+  }
   return PRESETS.find((item) => item.baseUrl && item.baseUrl === baseUrl) ?? PRESETS[PRESETS.length - 1];
 }
 
@@ -196,8 +199,11 @@ const isThinking = (value: unknown): value is ThinkingLevel =>
 function readProvider(value: unknown, fallbackId: string): Provider | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
-  const baseUrl = text(raw.baseUrl).trim();
+  let baseUrl = text(raw.baseUrl).trim();
   if (!baseUrl) return null;
+  if (baseUrl.includes(NVIDIA_PROXY_PATH)) {
+    baseUrl = `${window.location.origin}${NVIDIA_PROXY_PATH}v1`;
+  }
   const models = Array.isArray(raw.models)
     ? [...new Set(raw.models.map((model) => text(model).trim()).filter(Boolean))]
     : [];

@@ -210,9 +210,66 @@ async function token(request, env, url) {
   );
 }
 
+// NVIDIA's API sends no CORS headers, so browsers can only reach it through
+// the app's own origin. This proxy forwards /proxy/nvidia/* requests to
+// integrate.api.nvidia.com, mirroring the Vite dev-server proxy.
+const NVIDIA_TARGET = "https://integrate.api.nvidia.com";
+const NVIDIA_PREFIX = "/proxy/nvidia";
+
+function nvidiaProxy(request, url) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": url.origin,
+        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
+
+  const targetPath = url.pathname.replace(/^\/proxy\/nvidia/, "") || "/";
+  const targetUrl = `${NVIDIA_TARGET}${targetPath}${url.search}`;
+
+  const headers = new Headers(request.headers);
+  headers.delete("host");
+  headers.delete("origin");
+
+  return fetch(targetUrl, {
+    method: request.method,
+    headers,
+    body: request.method !== "GET" && request.method !== "HEAD" ? request.body : undefined,
+  }).then((upstream) => {
+    const proxyHeaders = new Headers(upstream.headers);
+    proxyHeaders.set("Access-Control-Allow-Origin", url.origin);
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: proxyHeaders,
+    });
+  }).catch((error) => {
+    return new Response(
+      JSON.stringify({ error: { message: `Proxy error: ${error.message || String(error)}` } }),
+      {
+        status: 502,
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": url.origin,
+        },
+      },
+    );
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // NVIDIA proxy — runs before auth so it works even without Google credentials.
+    if (url.pathname.startsWith(NVIDIA_PREFIX)) {
+      return nvidiaProxy(request, url);
+    }
+
     const route = `${request.method} ${url.pathname}`;
     if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.SESSION_SECRET) {
       return request.method === "GET"
