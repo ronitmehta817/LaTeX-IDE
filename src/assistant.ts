@@ -583,7 +583,7 @@ async function describeFailure(response: Response) {
 type RawToolCall = {
   index?: number;
   id?: string;
-  function?: { name?: string; arguments?: string };
+  function?: { name?: string; arguments?: string | Record<string, unknown> };
   extra_content?: unknown;
 };
 
@@ -595,13 +595,23 @@ function mergeToolCall(calls: ToolCall[], part: RawToolCall) {
   if (part.extra_content !== undefined) call.extra_content = part.extra_content;
   const name = part.function?.name;
   if (name) call.function.name = call.function.name && name !== call.function.name ? call.function.name + name : name;
-  if (part.function?.arguments) call.function.arguments += part.function.arguments;
+  if (part.function?.arguments !== undefined) {
+    const args = part.function.arguments;
+    if (typeof args === "string") {
+      call.function.arguments += args;
+    } else if (typeof args === "object" && args !== null) {
+      call.function.arguments = JSON.stringify(args);
+    }
+  }
 }
 
 // OpenRouter takes the level as reasoning.effort and rejects reasoning_effort.
+// NVIDIA NIM does not support reasoning_effort at all.
 function thinkingParameter(settings: AssistantSettings) {
   if (settings.thinking === "default") return {};
-  return new URL(settings.baseUrl).hostname.endsWith("openrouter.ai")
+  const base = settings.baseUrl;
+  if (base.includes("/proxy/nvidia") || base.includes("nvidia.com")) return {};
+  return new URL(base).hostname.endsWith("openrouter.ai")
     ? { reasoning: { effort: settings.thinking } }
     : { reasoning_effort: settings.thinking };
 }
@@ -613,6 +623,7 @@ async function requestCompletion(
   onText: (text: string) => void,
 ): Promise<{ content: string; toolCalls: ToolCall[] }> {
   const url = endpointUrl(settings.baseUrl);
+  const isNvidia = settings.baseUrl.includes("/proxy/nvidia") || settings.baseUrl.includes("nvidia.com");
   let response: Response;
   try {
     response = await fetch(url, {
@@ -624,6 +635,8 @@ async function requestCompletion(
         tools: ASSISTANT_TOOLS,
         tool_choice: "auto",
         stream: true,
+        // NVIDIA NIM can 400 if the implicit token budget is too small for tool call JSON.
+        ...(isNvidia ? { max_tokens: 4096 } : {}),
         ...thinkingParameter(settings),
       }),
       signal,
