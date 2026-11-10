@@ -20,8 +20,10 @@ import {
   X,
 } from "@phosphor-icons/react";
 import {
+  AssistantError,
   compactHistory,
   projectChanges,
+  reportError,
   runAssistant,
   undoProjectChanges,
   validateBaseUrl,
@@ -1121,6 +1123,8 @@ export default function AssistantPanel({
     let replyId: number | null = null;
     let thinkingId: number | null = null;
     const model = active.model;
+    const service = hostOf(active.provider.baseUrl);
+    const started = Date.now();
     const toolItems = new Map<string, number>();
     try {
       historyRef.current = await runAssistant({
@@ -1179,8 +1183,20 @@ export default function AssistantPanel({
           ),
         );
       }
-      if (controller.signal.aborted) push({ kind: "notice", text: "Stopped." });
-      else push({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      if (controller.signal.aborted) {
+        push({ kind: "notice", text: "Stopped." });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        push({ kind: "error", text: message });
+        reportError({
+          source: "assistant",
+          service,
+          model,
+          status: error instanceof AssistantError ? error.status : 0,
+          message,
+          ms: Date.now() - started,
+        });
+      }
     } finally {
       if (thinkingId !== null) update(thinkingId, { endedAt: Date.now() });
       setWaiting(null);
