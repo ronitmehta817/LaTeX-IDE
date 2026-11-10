@@ -1,10 +1,11 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowCounterClockwise,
   ArrowRight,
   ArrowUp,
   At,
   Brain,
+  CaretDown,
   Check,
   Cpu,
   GearSix,
@@ -315,6 +316,7 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 type Item =
   | { id: number; kind: "user"; text: string; meta: string }
   | { id: number; kind: "assistant"; text: string }
+  | { id: number; kind: "thinking"; text: string; startedAt: number; endedAt: number | null }
   | { id: number; kind: "tool"; status: ToolStatus; summary: string }
   | {
       id: number;
@@ -760,6 +762,251 @@ function ChangesCard({ item, onUndo }: { item: Extract<Item, { kind: "changes" }
   );
 }
 
+// Whole seconds from start to end, counting up once a second until there is an end.
+function useSeconds(start: number, end: number | null) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (end !== null) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [end]);
+  return Math.max(0, Math.round(((end ?? now) - start) / 1000));
+}
+
+function WaitingStep({ model, since }: { model: string; since: number }) {
+  const seconds = useSeconds(since, null);
+  return (
+    <div className="assistant-tool running" role="status">
+      <SpinnerGap className="spin" aria-hidden="true" />
+      <span>
+        Waiting for {model}
+        {seconds >= 2 && <span aria-hidden="true"> · {seconds}s</span>}
+      </span>
+    </div>
+  );
+}
+
+function ThinkingStep({ item }: { item: Extract<Item, { kind: "thinking" }> }) {
+  const seconds = useSeconds(item.startedAt, item.endedAt);
+  if (item.endedAt === null) {
+    return (
+      <div className="assistant-tool assistant-thinking running">
+        <div className="assistant-thinking-head" role="status">
+          <SpinnerGap className="spin" aria-hidden="true" />
+          <span>
+            Thinking<span aria-hidden="true"> · {seconds}s</span>
+          </span>
+        </div>
+        <p className="assistant-thinking-live" aria-hidden="true">
+          {item.text.slice(-600)}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <details className="assistant-tool assistant-thinking done">
+      <summary className="assistant-thinking-head">
+        <Brain aria-hidden="true" />
+        <span>{seconds < 1 ? "Thought briefly" : `Thought for ${seconds}s`}</span>
+        <CaretDown className="assistant-thinking-caret" weight="bold" aria-hidden="true" />
+      </summary>
+      <p className="assistant-thinking-text">{item.text.trim()}</p>
+    </details>
+  );
+}
+
+type MenuGroup = { label?: string; options: { value: string; label: string }[] };
+
+// A picker that draws its own list: a native select opens in the operating
+// system's style, which differs between Windows, macOS and Linux.
+function ChipMenu({
+  icon,
+  label,
+  text,
+  groups,
+  value,
+  empty = "Nothing to choose",
+  mono = false,
+  disabled = false,
+  className = "",
+  onOpen,
+  onSelect,
+}: {
+  icon: ReactNode;
+  label: string;
+  text: string;
+  groups: MenuGroup[];
+  value?: string;
+  empty?: string;
+  mono?: boolean;
+  disabled?: boolean;
+  className?: string;
+  onOpen?: () => void;
+  onSelect: (value: string) => void;
+}) {
+  const id = useId();
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const options = groups.flatMap((group) => group.options);
+  const optionId = (index: number) => `${id}-option-${index}`;
+  const current = options.find((option) => option.value === value)?.label;
+  const description = `${label}: ${current ?? text}`;
+
+  const show = () => {
+    onOpen?.();
+    setActive(Math.max(0, options.findIndex((option) => option.value === value)));
+    setOpen(true);
+  };
+
+  const hide = (refocus: boolean) => {
+    setOpen(false);
+    if (refocus) buttonRef.current?.focus();
+  };
+
+  const pick = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    hide(true);
+    onSelect(option.value);
+  };
+
+  const move = (step: number) => {
+    if (options.length) setActive((current) => (current + step + options.length) % options.length);
+  };
+
+  // The list opens above the chip and shifts sideways to stay inside the message box.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const root = rootRef.current;
+    if (!open || !list || !root) return;
+    list.style.left = "0px";
+    const bounds = (root.closest(".assistant-box") ?? document.body).getBoundingClientRect();
+    const anchor = root.getBoundingClientRect();
+    const overflow = anchor.left + list.offsetWidth - bounds.right;
+    list.style.left = `${Math.max(bounds.left - anchor.left, Math.min(0, -overflow))}px`;
+    list.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) document.getElementById(optionId(active))?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  let index = -1;
+  return (
+    <span ref={rootRef} className={`assistant-chip${className ? ` ${className}` : ""}`}>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={description}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? `${id}-list` : undefined}
+        title={current ? description : label}
+        disabled={disabled}
+        onClick={() => (open ? hide(false) : show())}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          if (!open) show();
+        }}
+      >
+        {icon}
+        <span className="assistant-chip-text">{text}</span>
+        <CaretDown className="assistant-chip-caret" weight="bold" aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          ref={listRef}
+          id={`${id}-list`}
+          className={`assistant-menu${mono ? " mono" : ""}`}
+          role="listbox"
+          aria-label={label}
+          tabIndex={-1}
+          aria-activedescendant={options.length ? optionId(active) : undefined}
+          onKeyDown={(event) => {
+            switch (event.key) {
+              case "ArrowDown":
+                move(1);
+                break;
+              case "ArrowUp":
+                move(-1);
+                break;
+              case "Home":
+                setActive(0);
+                break;
+              case "End":
+                setActive(Math.max(0, options.length - 1));
+                break;
+              case "Enter":
+              case " ":
+                pick(active);
+                break;
+              case "Escape":
+                hide(true);
+                break;
+              case "Tab":
+                hide(true);
+                return;
+              default:
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          {options.length === 0 && <p className="assistant-menu-empty">{empty}</p>}
+          {groups.map((group, groupIndex) =>
+            group.options.length === 0 ? null : (
+              <div key={group.label ?? groupIndex} role="group" aria-label={group.label}>
+                {group.label && (
+                  <div className="assistant-menu-label" aria-hidden="true">
+                    {group.label}
+                  </div>
+                )}
+                {group.options.map((option) => {
+                  index += 1;
+                  const optionIndex = index;
+                  const selected = option.value === value;
+                  return (
+                    <div
+                      key={option.value}
+                      id={optionId(optionIndex)}
+                      role="option"
+                      aria-selected={selected}
+                      className={`assistant-menu-option${optionIndex === active ? " active" : ""}`}
+                      onPointerMove={() => setActive(optionIndex)}
+                      onClick={() => pick(optionIndex)}
+                    >
+                      <span>{option.label}</span>
+                      {selected && <Check weight="bold" aria-hidden="true" />}
+                    </div>
+                  );
+                })}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+    </span>
+  );
+}
+
 export default function AssistantPanel({
   host,
   hidden,
@@ -788,6 +1035,8 @@ export default function AssistantPanel({
       .sort((a, b) => a.localeCompare(b));
   const [paths, setPaths] = useState(textPaths);
   const [running, setRunning] = useState(false);
+  // Set while a request has been sent and nothing has come back yet.
+  const [waiting, setWaiting] = useState<{ model: string; since: number } | null>(null);
   const historyRef = useRef<ChatMessage[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const nextIdRef = useRef(1);
@@ -800,7 +1049,7 @@ export default function AssistantPanel({
   useEffect(() => {
     const list = listRef.current;
     if (list && stickRef.current) list.scrollTop = list.scrollHeight;
-  }, [items]);
+  }, [items, waiting]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -870,6 +1119,8 @@ export default function AssistantPanel({
     push({ kind: "user", text: prompt, meta: `${active.model} · ${level}${tagNote}` });
 
     let replyId: number | null = null;
+    let thinkingId: number | null = null;
+    const model = active.model;
     const toolItems = new Map<string, number>();
     try {
       historyRef.current = await runAssistant({
@@ -886,7 +1137,19 @@ export default function AssistantPanel({
         tagged: tags,
         signal: controller.signal,
         onEvent: (event) => {
-          if (event.type === "text") {
+          setWaiting(event.type === "waiting" ? { model, since: Date.now() } : null);
+          if (event.type === "waiting") {
+            replyId = null;
+          } else if (event.type === "thinking") {
+            if (thinkingId === null) {
+              thinkingId = push({ kind: "thinking", text: event.text, startedAt: Date.now(), endedAt: null });
+            } else {
+              update(thinkingId, { text: event.text });
+            }
+          } else if (event.type === "thinking-end") {
+            if (thinkingId !== null) update(thinkingId, { endedAt: Date.now() });
+            thinkingId = null;
+          } else if (event.type === "text") {
             if (replyId === null) replyId = push({ kind: "assistant", text: event.text });
             else update(replyId, { text: event.text });
           } else if (event.type === "message-end") {
@@ -919,6 +1182,8 @@ export default function AssistantPanel({
       if (controller.signal.aborted) push({ kind: "notice", text: "Stopped." });
       else push({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally {
+      if (thinkingId !== null) update(thinkingId, { endedAt: Date.now() });
+      setWaiting(null);
       abortRef.current = null;
       setRunning(false);
       const after = host.getProject();
@@ -1078,6 +1343,8 @@ export default function AssistantPanel({
                     );
                   case "assistant":
                     return <MessageText key={item.id} text={item.text} />;
+                  case "thinking":
+                    return <ThinkingStep key={item.id} item={item} />;
                   case "tool":
                     return (
                       <div key={item.id} className={`assistant-tool ${item.status}`}>
@@ -1109,6 +1376,7 @@ export default function AssistantPanel({
                 }
               })
             )}
+            {running && waiting && <WaitingStep model={waiting.model} since={waiting.since} />}
           </div>
 
           <form
@@ -1153,69 +1421,64 @@ export default function AssistantPanel({
               <div className="assistant-bar">
                 {active && (
                   <>
-                    <span className="assistant-chip model" title="Model for the next message">
-                      <Cpu aria-hidden="true" />
-                      <select
-                        aria-label="Model for the next message"
-                        value={`${usable.indexOf(active.provider)}:${active.provider.models.indexOf(active.model)}`}
-                        disabled={running}
-                        onChange={(event) => {
-                          const [providerIndex, modelIndex] = event.target.value.split(":").map(Number);
-                          const provider = usable[providerIndex];
-                          if (provider) choose({ providerId: provider.id, model: provider.models[modelIndex] });
-                        }}
-                      >
-                        {usable.map((provider, providerIndex) => (
-                          <optgroup key={provider.id} label={provider.name}>
-                            {provider.models.map((model, modelIndex) => (
-                              <option key={model} value={`${providerIndex}:${modelIndex}`}>
-                                {model}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                    </span>
-                    <span className="assistant-chip" title="Thinking level for the next message">
-                      <Brain aria-hidden="true" />
-                      <select
-                        aria-label="Thinking level for the next message"
-                        value={active.thinking}
-                        disabled={running}
-                        onChange={(event) => choose({ thinking: event.target.value as ThinkingLevel })}
-                      >
-                        {THINKING_LEVELS.map((level) => (
-                          <option key={level.value} value={level.value}>
-                            {level.short}
-                          </option>
-                        ))}
-                      </select>
-                    </span>
+                    <ChipMenu
+                      className="model"
+                      icon={<Cpu aria-hidden="true" />}
+                      label="Model for the next message"
+                      text={active.model.split("/").pop() || active.model}
+                      mono
+                      disabled={running}
+                      value={`${usable.indexOf(active.provider)}:${active.provider.models.indexOf(active.model)}`}
+                      groups={usable.map((provider, providerIndex) => ({
+                        label: provider.name,
+                        options: provider.models.map((model, modelIndex) => ({
+                          value: `${providerIndex}:${modelIndex}`,
+                          label: model,
+                        })),
+                      }))}
+                      onSelect={(value) => {
+                        const [providerIndex, modelIndex] = value.split(":").map(Number);
+                        const provider = usable[providerIndex];
+                        if (provider) choose({ providerId: provider.id, model: provider.models[modelIndex] });
+                      }}
+                    />
+                    <ChipMenu
+                      icon={<Brain aria-hidden="true" />}
+                      label="Thinking level for the next message"
+                      text={THINKING_LEVELS.find((level) => level.value === active.thinking)?.short ?? "Default"}
+                      disabled={running}
+                      value={active.thinking}
+                      groups={[
+                        {
+                          label: "Thinking",
+                          options: THINKING_LEVELS.map((level) => ({ value: level.value, label: level.short })),
+                        },
+                      ]}
+                      onSelect={(value) => choose({ thinking: value as ThinkingLevel })}
+                    />
                   </>
                 )}
-                <span className="assistant-chip" title="Tag a file for the assistant to change">
-                  <At aria-hidden="true" />
-                  <select
-                    aria-label="Tag a file for the assistant to change"
-                    value=""
-                    disabled={running}
-                    onFocus={() => setPaths(textPaths())}
-                    onMouseDown={() => setPaths(textPaths())}
-                    onChange={(event) => {
-                      const path = event.target.value;
-                      if (path && !tagged.includes(path)) setTagged([...tagged, path]);
-                    }}
-                  >
-                    <option value="">Tag a file</option>
-                    {paths
-                      .filter((path) => !tagged.includes(path))
-                      .map((path) => (
-                        <option key={path} value={path}>
-                          {path}
-                        </option>
-                      ))}
-                  </select>
-                </span>
+                <ChipMenu
+                  className="tag"
+                  icon={<At aria-hidden="true" />}
+                  label="Tag a file for the assistant to change"
+                  text="Tag a file"
+                  mono
+                  disabled={running}
+                  empty={paths.length ? "Every file is tagged" : "No text files yet"}
+                  groups={[
+                    {
+                      label: "Edit this file",
+                      options: paths
+                        .filter((path) => !tagged.includes(path))
+                        .map((path) => ({ value: path, label: path })),
+                    },
+                  ]}
+                  onOpen={() => setPaths(textPaths())}
+                  onSelect={(path) => {
+                    if (!tagged.includes(path)) setTagged([...tagged, path]);
+                  }}
+                />
                 <span className="assistant-spacer" />
                 {running ? (
                   <button
