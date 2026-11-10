@@ -774,6 +774,47 @@ function isNvidiaBaseUrl(baseUrl: string) {
   return baseUrl.includes("/proxy/nvidia") || baseUrl.includes("nvidia.com");
 }
 
+// Cloudflare closes a connection that stays silent for about 100 seconds, and a
+// busy NVIDIA model can take longer than that to start. So NVIDIA requests do
+// not stream: NVIDIA answers within NVCF-POLL-SECONDS, either with the reply or
+// with 202 and a request ID, and the app asks again until the reply is ready.
+const NVIDIA_POLL_SECONDS = 60;
+const NVIDIA_MAX_WAIT_MS = 10 * 60_000;
+const NVIDIA_POLL_GAP_MS = 2_000;
+
+function pause(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    }, { once: true });
+  });
+}
+
+async function waitForNvidia(first: Response, url: string, settings: AssistantSettings, signal: AbortSignal) {
+  let response = first;
+  const started = Date.now();
+  while (response.status === 202) {
+    const requestId = response.headers.get("NVCF-REQID");
+    if (!requestId) {
+      throw new AssistantError("NVIDIA said the reply is not ready but sent no request ID to check back with.", 202);
+    }
+    if (Date.now() - started > NVIDIA_MAX_WAIT_MS) {
+      throw new AssistantError(
+        `NVIDIA did not finish within ${NVIDIA_MAX_WAIT_MS / 60_000} minutes. Try again, or choose a smaller model.`,
+      );
+    }
+    await response.body?.cancel();
+    await pause(NVIDIA_POLL_GAP_MS, signal);
+    response = await fetch(url.replace(/\/chat\/completions$/, `/status/${encodeURIComponent(requestId)}`), {
+      headers: { ...requestHeaders(settings), "NVCF-POLL-SECONDS": String(NVIDIA_POLL_SECONDS) },
+      signal,
+    });
+  }
+  return response;
+}
+
 function isGeminiBaseUrl(baseUrl: string) {
   try {
     return new URL(baseUrl).hostname === "generativelanguage.googleapis.com";
@@ -830,22 +871,25 @@ async function requestCompletion(
   try {
     response = await fetch(url, {
       method: "POST",
-      headers: requestHeaders(settings),
+      headers: isNvidia
+        ? { ...requestHeaders(settings), "NVCF-POLL-SECONDS": String(NVIDIA_POLL_SECONDS) }
+        : requestHeaders(settings),
       body: JSON.stringify({
         model: settings.model,
         messages,
         ...(tools
           ? { tools: isGeminiBaseUrl(settings.baseUrl) ? GEMINI_TOOLS : ASSISTANT_TOOLS, tool_choice: "auto" }
           : {}),
-        stream: true,
+        stream: !isNvidia,
         // NVIDIA NIM can 400 if the implicit token budget is too small for tool call JSON.
         ...(isNvidia ? { max_tokens: 4096 } : {}),
         ...thinkingParameter(settings),
       }),
       signal,
     });
+    if (isNvidia) response = await waitForNvidia(response, url, settings, signal);
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal.aborted || error instanceof AssistantError) throw error;
     throw new AssistantError(
       `Could not reach ${new URL(url).host}. Check the base URL and your connection. The service must also accept requests from web pages (CORS).`,
     );
