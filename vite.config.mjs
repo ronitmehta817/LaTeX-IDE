@@ -12,21 +12,24 @@ const proxy = {
   },
 };
 
-// Runs the Cloudflare Worker's /auth routes inside the dev and preview servers,
-// with its settings read from .env.local.
+// Runs the Cloudflare Worker's /auth and /log routes inside the dev and preview
+// servers, with its settings read from .env.local.
 function googleAuth() {
   let env = {};
   const handle = async (req, res, next) => {
-    if (!req.url?.startsWith("/auth/")) return next();
+    if (!req.url?.startsWith("/auth/") && !req.url?.startsWith("/log/")) return next();
     try {
       const headers = new Headers();
-      for (const name of ["cookie", "origin"]) {
+      for (const name of ["cookie", "origin", "content-type"]) {
         if (req.headers[name]) headers.set(name, req.headers[name]);
       }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
       const response = await worker.fetch(
         new Request(new URL(req.url, `http://${req.headers.host}`), {
           method: req.method,
           headers,
+          body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
         }),
         env,
       );
