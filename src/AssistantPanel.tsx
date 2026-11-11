@@ -1,14 +1,17 @@
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
+  ArrowClockwise,
   ArrowCounterClockwise,
   ArrowRight,
   ArrowUp,
   At,
   Brain,
+  CaretDown,
   Check,
   Cpu,
   GearSix,
   NotePencil,
+  Paperclip,
   PencilSimple,
   Plus,
   Sparkle,
@@ -19,8 +22,10 @@ import {
   X,
 } from "@phosphor-icons/react";
 import {
+  AssistantError,
   compactHistory,
   projectChanges,
+  reportError,
   runAssistant,
   undoProjectChanges,
   validateBaseUrl,
@@ -312,77 +317,154 @@ function activeChoice(config: AccountSettings) {
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
+type Retry = { prompt: string; tags: string[]; historyLength: number };
+
 type Item =
   | { id: number; kind: "user"; text: string; meta: string }
   | { id: number; kind: "assistant"; text: string }
+  | { id: number; kind: "thinking"; text: string; startedAt: number; endedAt: number | null }
   | { id: number; kind: "tool"; status: ToolStatus; summary: string }
+  | { id: number; kind: "context"; text: string }
   | {
       id: number;
       kind: "changes";
       changes: FileChange[];
-      before: AssistantProject;
-      after: AssistantProject;
+      // null when a saved chat could not keep the files needed to undo.
+      before: AssistantProject | null;
+      after: AssistantProject | null;
       undone: string[] | null;
     }
-  | { id: number; kind: "error"; text: string }
+  // `retry` is set on the latest failed request, so it can be sent again.
+  | { id: number; kind: "error"; text: string; retry?: Retry }
   | { id: number; kind: "notice"; text: string };
 
-function renderInline(text: string): ReactNode[] {
-  return text
-    .split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g)
-    .filter(Boolean)
-    .map((part, index) => {
-      if (part.length > 2 && part.startsWith("`") && part.endsWith("`")) {
-        return <code key={index}>{part.slice(1, -1)}</code>;
-      }
-      if (part.length > 4 && part.startsWith("**") && part.endsWith("**")) {
-        return <strong key={index}>{part.slice(2, -2)}</strong>;
-      }
-      return <Fragment key={index}>{part}</Fragment>;
-    });
+// Chats are saved per project in this browser's local storage, never on a server.
+const CHAT_PREFIX = "latex-editor:chat:v1:";
+const CHAT_INDEX_KEY = "latex-editor:chats:v1";
+const MAX_SAVED_CHATS = 20;
+const MAX_SAVED_ITEMS = 300;
+const MAX_UNDO_SNAPSHOT_CHARS = 300_000;
+
+type SavedChat = { items: Item[]; history: ChatMessage[] };
+
+const ITEM_KINDS = new Set(["user", "assistant", "thinking", "tool", "context", "changes", "error", "notice"]);
+
+function isItem(value: unknown): value is Item {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  if (typeof item.id !== "number" || !ITEM_KINDS.has(String(item.kind))) return false;
+  if (item.kind === "tool") return typeof item.summary === "string" && typeof item.status === "string";
+  if (item.kind === "changes") return Array.isArray(item.changes);
+  if (item.kind === "thinking") return typeof item.text === "string" && typeof item.startedAt === "number";
+  return typeof item.text === "string";
 }
 
-// A small Markdown subset: code fences, lists, paragraphs, `code` and **bold**.
-function MessageText({ text }: { text: string }) {
-  const blocks: ReactNode[] = [];
-  text.split("```").forEach((part, index) => {
-    if (index % 2 === 1) {
-      const newline = part.indexOf("\n");
-      const hasLanguage = newline >= 0 && /^[\w+#.-]*$/.test(part.slice(0, newline).trim());
-      blocks.push(
-        <pre key={index}>
-          <code>{(hasLanguage ? part.slice(newline + 1) : part).replace(/\n$/, "")}</code>
-        </pre>,
-      );
-      return;
-    }
-    part.split(/\n{2,}/).forEach((paragraph, position) => {
-      const lines = paragraph.split("\n").filter((line) => line.trim());
-      if (lines.length === 0) return;
-      const key = `${index}-${position}`;
-      const marker = /^\s*([-*•]|\d+[.)])\s+/;
-      if (lines.every((line) => marker.test(line))) {
-        const entries = lines.map((line, item) => <li key={item}>{renderInline(line.replace(marker, ""))}</li>);
-        blocks.push(/^\s*\d/.test(lines[0]) ? <ol key={key}>{entries}</ol> : <ul key={key}>{entries}</ul>);
-        return;
-      }
-      blocks.push(
-        <p key={key}>
-          {lines.map((line, item) => {
-            const heading = /^#{1,6}\s+/.test(line);
-            const content = renderInline(line.replace(/^#{1,6}\s+/, ""));
-            return (
-              <Fragment key={item}>
-                {item > 0 && <br />}
-                {heading ? <strong>{content}</strong> : content}
-              </Fragment>
-            );
-          })}
-        </p>,
-      );
-    });
+function readChatIndex(): { key: string; savedAt: number }[] {
+  try {
+    const parsed: unknown = JSON.parse(readStorage(local, CHAT_INDEX_KEY) ?? "[]");
+    return Array.isArray(parsed)
+      ? parsed.filter((entry) => typeof entry?.key === "string" && typeof entry?.savedAt === "number")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+// Only the files a change touched are kept, which is all undo needs.
+function changedFiles(project: AssistantProject, paths: string[]): AssistantProject | null {
+  const files: AssistantProject["files"] = {};
+  for (const path of paths) {
+    const file = project.files[path];
+    if (!file) continue;
+    if (file.kind !== "text") return null;
+    files[path] = file;
+  }
+  return { files, mainFile: project.mainFile, activeFile: project.activeFile };
+}
+
+function storableItem(item: Item): Item {
+  if (item.kind === "thinking" && item.endedAt === null) return { ...item, endedAt: Date.now() };
+  if (item.kind !== "changes" || !item.before || !item.after) return item;
+  const paths = item.changes.map((change) => change.path);
+  const before = changedFiles(item.before, paths);
+  const after = changedFiles(item.after, paths);
+  const size = before && after ? JSON.stringify([before.files, after.files]).length : Infinity;
+  return size <= MAX_UNDO_SNAPSHOT_CHARS ? { ...item, before, after } : { ...item, before: null, after: null };
+}
+
+function loadChat(key: string): SavedChat {
+  const saved = readJson(readStorage(local, CHAT_PREFIX + key));
+  const items = (Array.isArray(saved.items) ? saved.items : []).filter(isItem).map((item) =>
+    // A step that was running when the page closed did not finish.
+    item.kind === "tool" && item.status === "running" ? { ...item, status: "error" as const } : item,
+  );
+  const history = Array.isArray(saved.history) ? (saved.history as ChatMessage[]) : [];
+  return { items, history };
+}
+
+function saveChat(key: string, items: Item[], history: ChatMessage[]) {
+  const index = readChatIndex().filter((entry) => entry.key !== key);
+  if (items.length === 0) {
+    writeStorage(local, CHAT_PREFIX + key, null);
+    writeStorage(local, CHAT_INDEX_KEY, JSON.stringify(index));
+    return;
+  }
+  const value = JSON.stringify({
+    items: items.slice(-MAX_SAVED_ITEMS).map(storableItem),
+    history: compactHistory(history),
   });
-  return <div className="assistant-text">{blocks}</div>;
+  index.unshift({ key, savedAt: Date.now() });
+  const drop = () => writeStorage(local, CHAT_PREFIX + index.pop()!.key, null);
+  while (index.length > MAX_SAVED_CHATS) drop();
+  for (;;) {
+    try {
+      window.localStorage.setItem(CHAT_PREFIX + key, value);
+      break;
+    } catch (error) {
+      // When storage is full, the oldest chats make room. Any other failure means
+      // storage is unavailable, and the chat lasts only until the page closes.
+      const full = error instanceof DOMException && (error.name === "QuotaExceededError" || error.code === 22);
+      if (!full || index.length <= 1) return;
+      drop();
+    }
+  }
+  writeStorage(local, CHAT_INDEX_KEY, JSON.stringify(index));
+}
+
+// Removes the saved chat of a project that no longer exists.
+export function forgetChat(key: string) {
+  writeStorage(local, CHAT_PREFIX + key, null);
+  writeStorage(local, CHAT_INDEX_KEY, JSON.stringify(readChatIndex().filter((entry) => entry.key !== key)));
+}
+
+const Markdown = lazy(() => import("./Markdown"));
+
+// Model text as Markdown, with math. It shows as plain text until the renderer has loaded.
+function MessageText({
+  text,
+  className = "assistant-text",
+  copy = true,
+}: {
+  text: string;
+  className?: string;
+  copy?: boolean;
+}) {
+  return (
+    <Suspense fallback={<div className={`${className} assistant-text-plain`}>{text}</div>}>
+      <Markdown text={text} className={className} copy={copy} />
+    </Suspense>
+  );
+}
+
+// The live preview shows the end of the thinking. It starts at a line break when
+// one is near, otherwise between words, and never inside a code block.
+function recentThinking(text: string, length = 600) {
+  if (text.length <= length) return text;
+  const cut = text.length - length;
+  const lineBreak = text.lastIndexOf("\n", cut);
+  let start = lineBreak >= 0 && cut - lineBreak <= 300 ? lineBreak : Math.max(text.lastIndexOf(" ", cut), 0);
+  if (text.slice(0, start).split("```").length % 2 === 0) start = text.lastIndexOf("```", start);
+  return text.slice(start).trimStart();
 }
 
 function ProviderForm({
@@ -719,10 +801,12 @@ function ChangesCard({ item, onUndo }: { item: Extract<Item, { kind: "changes" }
           <span className="assistant-undone">
             <Check aria-hidden="true" /> Undone
           </span>
-        ) : (
+        ) : item.before && item.after ? (
           <button type="button" className="assistant-undo" onClick={onUndo}>
             <ArrowCounterClockwise aria-hidden="true" /> Undo AI changes
           </button>
+        ) : (
+          <span className="assistant-undone">Undo was not saved for this change</span>
         )}
       </div>
       <ul>
@@ -760,15 +844,274 @@ function ChangesCard({ item, onUndo }: { item: Extract<Item, { kind: "changes" }
   );
 }
 
+// Whole seconds from start to end, counting up once a second until there is an end.
+function useSeconds(start: number, end: number | null) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (end !== null) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [end]);
+  return Math.max(0, Math.round(((end ?? now) - start) / 1000));
+}
+
+function WaitingStep({ model, since }: { model: string; since: number }) {
+  const seconds = useSeconds(since, null);
+  return (
+    <div className="assistant-tool running" role="status">
+      <SpinnerGap className="spin" aria-hidden="true" />
+      <span>
+        Waiting for {model}
+        {seconds >= 2 && <span aria-hidden="true"> · {seconds}s</span>}
+      </span>
+    </div>
+  );
+}
+
+function ThinkingStep({ item }: { item: Extract<Item, { kind: "thinking" }> }) {
+  const seconds = useSeconds(item.startedAt, item.endedAt);
+  if (item.endedAt === null) {
+    return (
+      <div className="assistant-tool assistant-thinking running">
+        <div className="assistant-thinking-head" role="status">
+          <SpinnerGap className="spin" aria-hidden="true" />
+          <span>
+            Thinking<span aria-hidden="true"> · {seconds}s</span>
+          </span>
+        </div>
+        <div className="assistant-thinking-live" aria-hidden="true">
+          <MessageText
+            text={recentThinking(item.text)}
+            className="assistant-text assistant-thinking-markdown"
+            copy={false}
+          />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <details className="assistant-tool assistant-thinking done">
+      <summary className="assistant-thinking-head">
+        <Brain aria-hidden="true" />
+        <span>{seconds < 1 ? "Thought briefly" : `Thought for ${seconds}s`}</span>
+        <CaretDown className="assistant-thinking-caret" weight="bold" aria-hidden="true" />
+      </summary>
+      <div className="assistant-thinking-text">
+        <MessageText text={item.text.trim()} className="assistant-text assistant-thinking-markdown" />
+      </div>
+    </details>
+  );
+}
+
+type MenuGroup = { label?: string; options: { value: string; label: string }[] };
+
+// A picker that draws its own list: a native select opens in the operating
+// system's style, which differs between Windows, macOS and Linux.
+function ChipMenu({
+  icon,
+  label,
+  text,
+  groups,
+  value,
+  empty = "Nothing to choose",
+  mono = false,
+  disabled = false,
+  className = "",
+  onOpen,
+  onSelect,
+}: {
+  icon: ReactNode;
+  label: string;
+  text: string;
+  groups: MenuGroup[];
+  value?: string;
+  empty?: string;
+  mono?: boolean;
+  disabled?: boolean;
+  className?: string;
+  onOpen?: () => void;
+  onSelect: (value: string) => void;
+}) {
+  const id = useId();
+  const rootRef = useRef<HTMLSpanElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const options = groups.flatMap((group) => group.options);
+  const optionId = (index: number) => `${id}-option-${index}`;
+  const current = options.find((option) => option.value === value)?.label;
+  const description = current ? `${label}: ${current}` : label;
+
+  const show = () => {
+    onOpen?.();
+    setActive(Math.max(0, options.findIndex((option) => option.value === value)));
+    setOpen(true);
+  };
+
+  const hide = (refocus: boolean) => {
+    setOpen(false);
+    if (refocus) buttonRef.current?.focus();
+  };
+
+  const pick = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    hide(true);
+    onSelect(option.value);
+  };
+
+  const move = (step: number) => {
+    if (options.length) setActive((current) => (current + step + options.length) % options.length);
+  };
+
+  // The list opens above the chip and shifts sideways to stay inside the message box.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const root = rootRef.current;
+    if (!open || !list || !root) return;
+    list.style.left = "0px";
+    const bounds = (root.closest(".assistant-box, .assistant-log") ?? document.body).getBoundingClientRect();
+    const anchor = root.getBoundingClientRect();
+    const overflow = anchor.left + list.offsetWidth - bounds.right;
+    list.style.left = `${Math.max(bounds.left - anchor.left, Math.min(0, -overflow))}px`;
+    list.focus();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    return () => document.removeEventListener("pointerdown", closeOutside);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) document.getElementById(optionId(active))?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
+
+  let index = -1;
+  return (
+    <span ref={rootRef} className={`assistant-chip${className ? ` ${className}` : ""}`}>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={description}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? `${id}-list` : undefined}
+        title={current ? description : label}
+        disabled={disabled}
+        onClick={() => (open ? hide(false) : show())}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          if (!open) show();
+        }}
+      >
+        {icon}
+        <span className="assistant-chip-text">{text}</span>
+        <CaretDown className="assistant-chip-caret" weight="bold" aria-hidden="true" />
+      </button>
+      {open && (
+        <div
+          ref={listRef}
+          id={`${id}-list`}
+          className={`assistant-menu${mono ? " mono" : ""}`}
+          role="listbox"
+          aria-label={label}
+          tabIndex={-1}
+          aria-activedescendant={options.length ? optionId(active) : undefined}
+          onKeyDown={(event) => {
+            switch (event.key) {
+              case "ArrowDown":
+                move(1);
+                break;
+              case "ArrowUp":
+                move(-1);
+                break;
+              case "Home":
+                setActive(0);
+                break;
+              case "End":
+                setActive(Math.max(0, options.length - 1));
+                break;
+              case "Enter":
+              case " ":
+                pick(active);
+                break;
+              case "Escape":
+                hide(true);
+                break;
+              case "Tab":
+                hide(true);
+                return;
+              default:
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          {options.length === 0 && <p className="assistant-menu-empty">{empty}</p>}
+          {groups.map((group, groupIndex) =>
+            group.options.length === 0 ? null : (
+              <div key={group.label ?? groupIndex} role="group" aria-label={group.label}>
+                {group.label && (
+                  <div className="assistant-menu-label" aria-hidden="true">
+                    {group.label}
+                  </div>
+                )}
+                {group.options.map((option) => {
+                  index += 1;
+                  const optionIndex = index;
+                  const selected = option.value === value;
+                  return (
+                    <div
+                      key={option.value}
+                      id={optionId(optionIndex)}
+                      role="option"
+                      aria-selected={selected}
+                      className={`assistant-menu-option${optionIndex === active ? " active" : ""}`}
+                      onPointerMove={() => setActive(optionIndex)}
+                      onClick={() => pick(optionIndex)}
+                    >
+                      <span>{option.label}</span>
+                      {selected && <Check weight="bold" aria-hidden="true" />}
+                    </div>
+                  );
+                })}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+    </span>
+  );
+}
+
+const nextItemId = (items: Item[]) => items.reduce((max, item) => Math.max(max, item.id), 0) + 1;
+
 export default function AssistantPanel({
   host,
   hidden,
+  chatKey,
+  request,
   onClose,
   accountSettings,
   onSaveAccountSettings,
 }: {
   host: AssistantHost;
   hidden: boolean;
+  // Names the open project's saved chat.
+  chatKey: string;
+  // A message to send from elsewhere in the editor; a new id sends it.
+  request?: { id: number; text: string } | null;
   onClose: () => void;
   // undefined until Google Drive has answered; null when Drive has no settings yet.
   accountSettings?: AccountSettings | null;
@@ -779,7 +1122,12 @@ export default function AssistantPanel({
   const usable = config.providers.filter(isUsable);
   const [view, setView] = useState<"chat" | "settings">(() => (activeChoice(loadConfig()) ? "chat" : "settings"));
   const [editing, setEditing] = useState<Provider | "new" | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
+  const [initialChat] = useState(() => loadChat(chatKey));
+  // The items and the chat they belong to change together, so a save never mixes two projects.
+  const [chat, setChat] = useState({ key: chatKey, items: initialChat.items });
+  const items = chat.items;
+  const setItems = (next: Item[] | ((list: Item[]) => Item[])) =>
+    setChat((current) => ({ ...current, items: typeof next === "function" ? next(current.items) : next }));
   const [draft, setDraft] = useState("");
   const [tagged, setTagged] = useState<string[]>([]);
   const textPaths = () =>
@@ -788,19 +1136,74 @@ export default function AssistantPanel({
       .sort((a, b) => a.localeCompare(b));
   const [paths, setPaths] = useState(textPaths);
   const [running, setRunning] = useState(false);
-  const historyRef = useRef<ChatMessage[]>([]);
+  // Set while a request has been sent and nothing has come back yet.
+  const [waiting, setWaiting] = useState<{ model: string; since: number } | null>(null);
+  const historyRef = useRef<ChatMessage[]>(initialChat.history);
   const abortRef = useRef<AbortController | null>(null);
-  const nextIdRef = useRef(1);
+  // Each request gets a number; a request whose number is no longer current is ignored.
+  const runRef = useRef(0);
+  const nextIdRef = useRef(nextItemId(initialChat.items));
   const listRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Saves run one after another, so Drive never sees two at once.
   const driveSaveRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingSaveRef = useRef<{ key: string; items: Item[] } | null>(null);
+  const saveTimerRef = useRef(0);
+  const handledRequestRef = useRef(0);
+
+  const flushSave = () => {
+    window.clearTimeout(saveTimerRef.current);
+    const pending = pendingSaveRef.current;
+    pendingSaveRef.current = null;
+    if (pending) saveChat(pending.key, pending.items, historyRef.current);
+  };
+
+  // While a reply streams, the chat is saved once a second; otherwise straight away.
+  useEffect(() => {
+    pendingSaveRef.current = chat;
+    window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(flushSave, running ? 1000 : 0);
+  }, [chat, running]);
+
+  useEffect(() => {
+    window.addEventListener("pagehide", flushSave);
+    return () => {
+      window.removeEventListener("pagehide", flushSave);
+      flushSave();
+    };
+  }, []);
+
+  // Another project was opened: stop the request for the previous one and show this project's chat.
+  useLayoutEffect(() => {
+    if (chat.key === chatKey) return;
+    if (abortRef.current) {
+      pendingSaveRef.current = {
+        key: chat.key,
+        items: [
+          ...chat.items,
+          { id: nextIdRef.current, kind: "notice", text: "Stopped, because another project was opened." },
+        ],
+      };
+    }
+    runRef.current += 1;
+    abortRef.current?.abort();
+    flushSave();
+    const saved = loadChat(chatKey);
+    historyRef.current = saved.history;
+    nextIdRef.current = nextItemId(saved.items);
+    setChat({ key: chatKey, items: saved.items });
+  }, [chatKey]);
+
+  // The Markdown renderer loads in the background once the panel opens, before the first reply.
+  useEffect(() => {
+    if (!hidden) void import("./Markdown");
+  }, [hidden]);
 
   useEffect(() => {
     const list = listRef.current;
     if (list && stickRef.current) list.scrollTop = list.scrollHeight;
-  }, [items]);
+  }, [items, waiting]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -852,33 +1255,54 @@ export default function AssistantPanel({
     });
   };
 
-  const send = async (text: string) => {
+  // `fromComposer` sends what is typed in the box; retries and requests from the
+  // editor bring their own text and tags, and may name another model.
+  const send = async (
+    text: string,
+    {
+      fromComposer = false,
+      tags: givenTags,
+      choice,
+    }: { fromComposer?: boolean; tags?: string[]; choice?: { provider: Provider; model: string } } = {},
+  ) => {
     const prompt = text.trim();
     if (!prompt || running || !active) return;
+    const current = choice ? { ...active, ...choice } : active;
     const before = host.getProject();
     // Files tagged in the picker, plus any @path typed in the message that names a project file.
     const mentioned = [...prompt.matchAll(/@([^\s@]+)/g)].map((match) => match[1].replace(/[.,;:!?)]+$/, ""));
-    const tags = [...new Set([...tagged, ...mentioned])].filter((path) => path in before.files);
+    const tags = givenTags ?? [...new Set([...tagged, ...mentioned])].filter((path) => path in before.files);
     const controller = new AbortController();
     abortRef.current = controller;
+    const run = runRef.current + 1;
+    runRef.current = run;
+    const live = () => runRef.current === run;
     stickRef.current = true;
-    setDraft("");
-    setTagged([]);
+    if (fromComposer) {
+      setDraft("");
+      setTagged([]);
+    }
     setRunning(true);
-    const level = THINKING_LEVELS.find((item) => item.value === active.thinking)?.label ?? "";
+    // Only the latest failure can be retried.
+    setItems((list) => list.map((item) => (item.kind === "error" && item.retry ? { ...item, retry: undefined } : item)));
+    const level = THINKING_LEVELS.find((item) => item.value === current.thinking)?.label ?? "";
     const tagNote = tags.length ? ` · ${tags.map((path) => `@${path}`).join(" ")}` : "";
-    push({ kind: "user", text: prompt, meta: `${active.model} · ${level}${tagNote}` });
+    push({ kind: "user", text: prompt, meta: `${current.model} · ${level}${tagNote}` });
 
     let replyId: number | null = null;
+    let thinkingId: number | null = null;
+    const model = current.model;
+    const service = hostOf(current.provider.baseUrl);
+    const started = Date.now();
     const toolItems = new Map<string, number>();
     try {
-      historyRef.current = await runAssistant({
+      const result = await runAssistant({
         settings: {
-          baseUrl: active.provider.baseUrl,
-          model: active.model,
-          apiKey: active.provider.apiKey,
-          authHeader: active.provider.authHeader,
-          thinking: active.thinking,
+          baseUrl: current.provider.baseUrl,
+          model: current.model,
+          apiKey: current.provider.apiKey,
+          authHeader: current.provider.authHeader,
+          thinking: current.thinking,
         },
         host,
         history: compactHistory(historyRef.current),
@@ -886,7 +1310,22 @@ export default function AssistantPanel({
         tagged: tags,
         signal: controller.signal,
         onEvent: (event) => {
-          if (event.type === "text") {
+          if (!live()) return;
+          setWaiting(event.type === "waiting" ? { model, since: Date.now() } : null);
+          if (event.type === "context") {
+            push({ kind: "context", text: event.summary });
+          } else if (event.type === "waiting") {
+            replyId = null;
+          } else if (event.type === "thinking") {
+            if (thinkingId === null) {
+              thinkingId = push({ kind: "thinking", text: event.text, startedAt: Date.now(), endedAt: null });
+            } else {
+              update(thinkingId, { text: event.text });
+            }
+          } else if (event.type === "thinking-end") {
+            if (thinkingId !== null) update(thinkingId, { endedAt: Date.now() });
+            thinkingId = null;
+          } else if (event.type === "text") {
             if (replyId === null) replyId = push({ kind: "assistant", text: event.text });
             else update(replyId, { text: event.text });
           } else if (event.type === "message-end") {
@@ -901,7 +1340,10 @@ export default function AssistantPanel({
           }
         },
       });
+      if (live()) historyRef.current = result;
     } catch (error) {
+      if (!live()) return;
+      const historyLength = historyRef.current.length;
       historyRef.current = [
         ...historyRef.current,
         { role: "user", content: prompt },
@@ -916,18 +1358,56 @@ export default function AssistantPanel({
           ),
         );
       }
-      if (controller.signal.aborted) push({ kind: "notice", text: "Stopped." });
-      else push({ kind: "error", text: error instanceof Error ? error.message : String(error) });
+      if (controller.signal.aborted) {
+        push({ kind: "notice", text: "Stopped." });
+      } else {
+        const message = error instanceof Error ? error.message : String(error);
+        push({ kind: "error", text: message, retry: { prompt, tags, historyLength } });
+        reportError({
+          source: "assistant",
+          service,
+          model,
+          status: error instanceof AssistantError ? error.status : 0,
+          message,
+          ms: Date.now() - started,
+        });
+      }
     } finally {
-      abortRef.current = null;
+      setWaiting(null);
+      if (abortRef.current === controller) abortRef.current = null;
       setRunning(false);
-      const after = host.getProject();
-      const changes = projectChanges(before, after);
-      if (changes.length) push({ kind: "changes", changes, before, after, undone: null });
+      if (live()) {
+        if (thinkingId !== null) update(thinkingId, { endedAt: Date.now() });
+        const after = host.getProject();
+        const changes = projectChanges(before, after);
+        if (changes.length) push({ kind: "changes", changes, before, after, undone: null });
+      }
     }
   };
 
+  // Sends a failed request again, optionally with another model, in place of the failed attempt.
+  const retry = (item: Extract<Item, { kind: "error" }>, choice?: { provider: Provider; model: string }) => {
+    if (!item.retry || running) return;
+    const { prompt, tags, historyLength } = item.retry;
+    if (historyRef.current.length === historyLength + 2) historyRef.current = historyRef.current.slice(0, historyLength);
+    if (choice) choose({ providerId: choice.provider.id, model: choice.model });
+    void send(prompt, { tags, choice });
+  };
+
+  useEffect(() => {
+    if (!request || request.id === handledRequestRef.current) return;
+    handledRequestRef.current = request.id;
+    if (running || !active) {
+      setDraft(request.text);
+      return;
+    }
+    setEditing(null);
+    setView("chat");
+    void send(request.text);
+  }, [request]);
+
   const undo = (item: Extract<Item, { kind: "changes" }>) => {
+    if (!item.before || !item.after) return;
     const { project, kept } = undoProjectChanges(host.getProject(), item.before, item.after);
     host.setProject(project);
     update(item.id, { undone: kept });
@@ -1078,6 +1558,8 @@ export default function AssistantPanel({
                     );
                   case "assistant":
                     return <MessageText key={item.id} text={item.text} />;
+                  case "thinking":
+                    return <ThinkingStep key={item.id} item={item} />;
                   case "tool":
                     return (
                       <div key={item.id} className={`assistant-tool ${item.status}`}>
@@ -1091,13 +1573,55 @@ export default function AssistantPanel({
                         <span>{item.summary}</span>
                       </div>
                     );
+                  case "context":
+                    return (
+                      <div key={item.id} className="assistant-tool context">
+                        <Paperclip aria-hidden="true" />
+                        <span>{item.text}</span>
+                      </div>
+                    );
                   case "changes":
                     return <ChangesCard key={item.id} item={item} onUndo={() => undo(item)} />;
                   case "error":
                     return (
-                      <div key={item.id} className="assistant-error" role="alert">
-                        <WarningCircle weight="fill" aria-hidden="true" />
-                        <span>{item.text}</span>
+                      <div key={item.id} className="assistant-error-group">
+                        <div className="assistant-error" role="alert">
+                          <WarningCircle weight="fill" aria-hidden="true" />
+                          <span>{item.text}</span>
+                        </div>
+                        {item.retry && active && (
+                          <div className="assistant-retry">
+                            <button
+                              type="button"
+                              className="assistant-pill"
+                              disabled={running}
+                              onClick={() => retry(item)}
+                            >
+                              <ArrowClockwise aria-hidden="true" />
+                              Retry
+                            </button>
+                            <ChipMenu
+                              className="model"
+                              icon={<Cpu aria-hidden="true" />}
+                              label="Retry with another model"
+                              text="Retry with another model"
+                              disabled={running}
+                              value=""
+                              groups={usable.map((provider, providerIndex) => ({
+                                label: provider.name,
+                                options: provider.models.map((model, modelIndex) => ({
+                                  value: `${providerIndex}:${modelIndex}`,
+                                  label: model,
+                                })),
+                              }))}
+                              onSelect={(value) => {
+                                const [providerIndex, modelIndex] = value.split(":").map(Number);
+                                const provider = usable[providerIndex];
+                                if (provider) retry(item, { provider, model: provider.models[modelIndex] });
+                              }}
+                            />
+                          </div>
+                        )}
                       </div>
                     );
                   case "notice":
@@ -1109,13 +1633,14 @@ export default function AssistantPanel({
                 }
               })
             )}
+            {running && waiting && <WaitingStep model={waiting.model} since={waiting.since} />}
           </div>
 
           <form
             className="assistant-composer"
             onSubmit={(event) => {
               event.preventDefault();
-              void send(draft);
+              void send(draft, { fromComposer: true });
             }}
           >
             <div className="assistant-box">
@@ -1146,76 +1671,71 @@ export default function AssistantPanel({
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
-                    void send(draft);
+                    void send(draft, { fromComposer: true });
                   }
                 }}
               />
               <div className="assistant-bar">
                 {active && (
                   <>
-                    <span className="assistant-chip model" title="Model for the next message">
-                      <Cpu aria-hidden="true" />
-                      <select
-                        aria-label="Model for the next message"
-                        value={`${usable.indexOf(active.provider)}:${active.provider.models.indexOf(active.model)}`}
-                        disabled={running}
-                        onChange={(event) => {
-                          const [providerIndex, modelIndex] = event.target.value.split(":").map(Number);
-                          const provider = usable[providerIndex];
-                          if (provider) choose({ providerId: provider.id, model: provider.models[modelIndex] });
-                        }}
-                      >
-                        {usable.map((provider, providerIndex) => (
-                          <optgroup key={provider.id} label={provider.name}>
-                            {provider.models.map((model, modelIndex) => (
-                              <option key={model} value={`${providerIndex}:${modelIndex}`}>
-                                {model}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </select>
-                    </span>
-                    <span className="assistant-chip" title="Thinking level for the next message">
-                      <Brain aria-hidden="true" />
-                      <select
-                        aria-label="Thinking level for the next message"
-                        value={active.thinking}
-                        disabled={running}
-                        onChange={(event) => choose({ thinking: event.target.value as ThinkingLevel })}
-                      >
-                        {THINKING_LEVELS.map((level) => (
-                          <option key={level.value} value={level.value}>
-                            {level.short}
-                          </option>
-                        ))}
-                      </select>
-                    </span>
+                    <ChipMenu
+                      className="model"
+                      icon={<Cpu aria-hidden="true" />}
+                      label="Model for the next message"
+                      text={active.model.split("/").pop() || active.model}
+                      mono
+                      disabled={running}
+                      value={`${usable.indexOf(active.provider)}:${active.provider.models.indexOf(active.model)}`}
+                      groups={usable.map((provider, providerIndex) => ({
+                        label: provider.name,
+                        options: provider.models.map((model, modelIndex) => ({
+                          value: `${providerIndex}:${modelIndex}`,
+                          label: model,
+                        })),
+                      }))}
+                      onSelect={(value) => {
+                        const [providerIndex, modelIndex] = value.split(":").map(Number);
+                        const provider = usable[providerIndex];
+                        if (provider) choose({ providerId: provider.id, model: provider.models[modelIndex] });
+                      }}
+                    />
+                    <ChipMenu
+                      icon={<Brain aria-hidden="true" />}
+                      label="Thinking level for the next message"
+                      text={THINKING_LEVELS.find((level) => level.value === active.thinking)?.short ?? "Default"}
+                      disabled={running}
+                      value={active.thinking}
+                      groups={[
+                        {
+                          label: "Thinking",
+                          options: THINKING_LEVELS.map((level) => ({ value: level.value, label: level.short })),
+                        },
+                      ]}
+                      onSelect={(value) => choose({ thinking: value as ThinkingLevel })}
+                    />
                   </>
                 )}
-                <span className="assistant-chip" title="Tag a file for the assistant to change">
-                  <At aria-hidden="true" />
-                  <select
-                    aria-label="Tag a file for the assistant to change"
-                    value=""
-                    disabled={running}
-                    onFocus={() => setPaths(textPaths())}
-                    onMouseDown={() => setPaths(textPaths())}
-                    onChange={(event) => {
-                      const path = event.target.value;
-                      if (path && !tagged.includes(path)) setTagged([...tagged, path]);
-                    }}
-                  >
-                    <option value="">Tag a file</option>
-                    {paths
-                      .filter((path) => !tagged.includes(path))
-                      .map((path) => (
-                        <option key={path} value={path}>
-                          {path}
-                        </option>
-                      ))}
-                  </select>
-                </span>
+                <ChipMenu
+                  className="tag"
+                  icon={<At aria-hidden="true" />}
+                  label="Tag a file for the assistant to change"
+                  text="Tag a file"
+                  mono
+                  disabled={running}
+                  empty={paths.length ? "Every file is tagged" : "No text files yet"}
+                  groups={[
+                    {
+                      label: "Edit this file",
+                      options: paths
+                        .filter((path) => !tagged.includes(path))
+                        .map((path) => ({ value: path, label: path })),
+                    },
+                  ]}
+                  onOpen={() => setPaths(textPaths())}
+                  onSelect={(path) => {
+                    if (!tagged.includes(path)) setTagged([...tagged, path]);
+                  }}
+                />
                 <span className="assistant-spacer" />
                 {running ? (
                   <button

@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link
+    rel="icon"
+    type="image/svg+xml"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='0.5' y='0.5' width='31' height='31' rx='7.5' fill='%23010204' stroke='%23f5f6f6' stroke-opacity='0.3'/%3E%3Ctext x='15.5' y='20.5' text-anchor='middle' fill='%23f5f6f6' font-family='Georgia, Times New Roman, serif' font-size='16' font-style='italic' letter-spacing='-0.4'%3ET%3Ctspan dy='3' font-size='12' fill='%23f2a65a'%3Ee%3C/tspan%3E%3Ctspan dx='0.8' dy='-3'%3EX%3C/tspan%3E%3C/text%3E%3C/svg%3E"
+  />
   <title>Privacy Policy - LaTeX Editor</title>
   <style>
     :root {
@@ -86,7 +91,7 @@
 <body>
   <div class="container">
     <h1>Privacy Policy</h1>
-    <p class="muted">Last updated: November 9, 2026</p>
+    <p class="muted">Last updated: November 11, 2026</p>
 
     <p>
       This Privacy Policy explains how <strong>LaTeX Editor</strong> ("we", "our", or "the application"), accessible at
@@ -128,13 +133,31 @@
 
     <h2>3. Local Storage and Cookies</h2>
     <p>
-      The application uses your browser's local storage to save the currently active document. When you sign in, an encrypted
+      The application uses your browser's local storage to save the currently active document. It also saves your
+      conversations with the AI assistant there, one per project and for up to 20 projects, so a conversation is still
+      there after you reload the page. These conversations can include parts of your document and the assistant's changes.
+      They stay in this browser and are never sent to our servers. "New chat" deletes the open project's conversation.
+      When you sign in, an encrypted
       cookie keeps you signed in on this browser for up to 30 days after you last use the application. Signing out deletes it.
       You can clear this data at any time via your browser settings, and you can remove the application's access to your
       Google account at <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener noreferrer">myaccount.google.com/permissions</a>.
     </p>
 
-    <h2>4. Google API Services User Data Policy</h2>
+    <h2>4. Error Logs</h2>
+    <p>
+      When a request fails with an error (an HTTP 4xx or 5xx status, or no answer at all), this site's server records a
+      short error report. This covers requests to the AI service you chose, to NVIDIA through this site's server, to
+      Google Drive, and to this site's sign-in service, including the check that finds you are not signed in. A report
+      contains the service's address, the type and address of the request with file IDs removed, the error code, the
+      service's error message, the model name for AI requests, and how long the request took. For NVIDIA it also records
+      the size of the failed request.
+    </p>
+    <p>
+      Requests that succeed are not recorded. Reports never include your API keys, your messages, your files, or your
+      PDF. They are kept for a limited time in our hosting provider's (Cloudflare's) logs, only to diagnose problems.
+    </p>
+
+    <h2>5. Google API Services User Data Policy</h2>
     <p>
       LaTeX Editor's use and transfer of information received from Google APIs adheres to the
       <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener noreferrer">
@@ -142,7 +165,7 @@
       </a>, including the Limited Use requirements.
     </p>
 
-    <h2>5. Contact Us</h2>
+    <h2>6. Contact Us</h2>
     <p>
       If you have any questions or feedback regarding this Privacy Policy, please contact:
       <br />

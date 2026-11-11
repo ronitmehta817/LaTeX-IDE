@@ -43,7 +43,6 @@ import {
   FilePdf,
   FileText,
   FolderOpen,
-  GoogleLogo,
   MagnifyingGlass,
   Minus,
   PencilSimple,
@@ -63,8 +62,8 @@ import { strToU8, unzipSync, zipSync } from "fflate";
 import { SiglumCompiler, resolveRuntime } from "@siglum/engine";
 import type { CompileResult } from "@siglum/engine/compiler";
 import workerUrl from "@siglum/engine/worker?url";
-import type { AssistantHost, AssistantProject, CompileSummary } from "./assistant";
-import AssistantPanel, { readAccountSettings, type AccountSettings } from "./AssistantPanel";
+import { reportError, type AssistantHost, type AssistantProject, type CompileSummary } from "./assistant";
+import AssistantPanel, { forgetChat, readAccountSettings, type AccountSettings } from "./AssistantPanel";
 import "./styles.css";
 
 const STARTER_SOURCE = String.raw`\documentclass[11pt]{article}
@@ -189,6 +188,12 @@ const EXPLORER_HIDDEN_KEY = "latex-editor:explorer-hidden:v1";
 const ASSISTANT_OPEN_KEY = "latex-editor:assistant-open:v1";
 const DRIVE_PROJECT_KEY = "latex-editor:drive-project:v1";
 const DRIVE_DIRTY_KEY = "latex-editor:drive-dirty:v1";
+// The saved assistant chat of the project that is only in this browser.
+const LOCAL_CHAT_KEY = "latex-editor:local-chat:v1";
+// Drive projects that began in this browser keep the chat they started with.
+const CHAT_ALIASES_KEY = "latex-editor:chat-aliases:v1";
+const COMPILE_FAILED_LABEL = "Compile failed";
+const MAX_FIX_ERRORS = 10;
 const GOOGLE_RETURN_KEY = "latex-editor:google-return:v1";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
 const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
@@ -351,6 +356,23 @@ function safeStorageRead(key: string, fallback: string) {
   }
 }
 
+// crypto.randomUUID exists only on secure pages, so plain http on a local network falls back.
+function newLocalChatKey() {
+  const id = crypto.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `local:${id}`;
+}
+
+function readChatAliases(): Record<string, string> {
+  try {
+    const parsed: unknown = JSON.parse(safeStorageRead(CHAT_ALIASES_KEY, "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? Object.fromEntries(Object.entries(parsed).filter(([, value]) => typeof value === "string"))
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 type GoogleSession = { token: string; expiresAt: number; email: string };
 
 type DriveProject = {
@@ -483,6 +505,7 @@ async function googleFetch(
   url: string,
   init: RequestInit = {},
 ) {
+  const started = Date.now();
   if (session.expiresAt <= Date.now()) await refreshGoogleSession(session);
   const send = () => {
     const headers = new Headers(init.headers);
@@ -490,11 +513,11 @@ async function googleFetch(
     return fetch(url, { ...init, headers });
   };
   let response = await send();
+  // A 401 here usually means the token just expired, so it is renewed and sent once more.
   if (response.status === 401) {
     await refreshGoogleSession(session);
     response = await send();
   }
-  if (response.status === 401) throw new GoogleExpiredError();
   if (!response.ok) {
     let message = `Google Drive answered with status ${response.status}.`;
     try {
@@ -503,6 +526,17 @@ async function googleFetch(
     } catch {
       // Keep the status message.
     }
+    const address = new URL(url);
+    reportError({
+      source: "drive",
+      service: address.host,
+      method: init.method ?? "GET",
+      endpoint: address.pathname.replace(/\/files\/[^/]+/, "/files/:id"),
+      status: response.status,
+      message,
+      ms: Date.now() - started,
+    });
+    if (response.status === 401) throw new GoogleExpiredError();
     throw new GoogleRequestError(message, response.status);
   }
   return response;
@@ -715,7 +749,12 @@ function projectToZip(files: ProjectFiles) {
 }
 
 function projectFromZip(bytes: Uint8Array) {
-  const unpacked = unzipSync(bytes);
+  let unpacked: ReturnType<typeof unzipSync>;
+  try {
+    unpacked = unzipSync(bytes);
+  } catch {
+    throw new Error("This file is not a valid ZIP archive.");
+  }
   const rawPaths = Object.keys(unpacked)
     .filter((path) => !path.endsWith("/"))
     .map(normalizeProjectPath)
@@ -1284,13 +1323,82 @@ function getStatusIcon(phase: CompilePhase) {
   return <Check aria-hidden="true" />;
 }
 
+// Google's four-colour mark. Its sign-in branding rules forbid recolouring it.
+function GoogleMark() {
+  return (
+    <svg className="google-mark" viewBox="0 0 48 48" aria-hidden="true">
+      <path
+        fill="#EA4335"
+        d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"
+      />
+      <path
+        fill="#4285F4"
+        d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"
+      />
+      <path
+        fill="#34A853"
+        d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
+      />
+    </svg>
+  );
+}
+
+// CSS cannot tell when a flex row has wrapped, so a row whose later items start
+// below its first item gets data-wrapped, and the first item can centre too.
+function observeWrapping(rows: Element[]) {
+  const observer = new ResizeObserver((entries) => {
+    for (const { target } of entries) {
+      const [first, ...rest] = [...target.children] as HTMLElement[];
+      const wrapped =
+        Boolean(first) &&
+        rest.some((child) => child.offsetTop >= first.offsetTop + first.offsetHeight - 1);
+      target.toggleAttribute("data-wrapped", wrapped);
+    }
+  });
+  rows.forEach((row) => observer.observe(row));
+  return () => observer.disconnect();
+}
+
 type PdfPageSize = { width: number; height: number };
+
+// Phones reject or drop canvases much larger than this.
+const MAX_CANVAS_PIXELS = 2 ** 23;
+
+// Device pixels drawn per CSS pixel: the screen's density times any pinch
+// zoom, so pages stay sharp on 3x phone screens and when zoomed in.
+function useRenderDensity() {
+  const read = () => {
+    const pinch = Math.min(Math.max(window.visualViewport?.scale ?? 1, 1), 3);
+    return Math.round((window.devicePixelRatio || 1) * pinch * 4) / 4;
+  };
+  const [density, setDensity] = useState(read);
+  useEffect(() => {
+    let timer = 0;
+    const update = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setDensity(read()), 200);
+    };
+    window.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("resize", update);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("resize", update);
+    };
+  }, []);
+  return density;
+}
 
 type PdfPageCanvasProps = {
   pdfDocument: PDFDocumentProxy;
   pageNumber: number;
   pageCount: number;
   scale: number;
+  density: number;
   onError: (message: string) => void;
 };
 
@@ -1299,6 +1407,7 @@ function PdfPageCanvas({
   pageNumber,
   pageCount,
   scale,
+  density,
   onError,
 }: PdfPageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -1328,7 +1437,10 @@ function PdfPageCanvas({
       const context = canvas?.getContext("2d", { alpha: false });
       if (cancelled || !canvas || !context) return;
       const viewport = pdfPage.getViewport({ scale });
-      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const pixelRatio = Math.min(
+        density,
+        Math.sqrt(MAX_CANVAS_PIXELS / (viewport.width * viewport.height)),
+      );
       canvas.width = Math.floor(viewport.width * pixelRatio);
       canvas.height = Math.floor(viewport.height * pixelRatio);
       renderTask = pdfPage.render({
@@ -1375,7 +1487,7 @@ function PdfPageCanvas({
       renderTask?.cancel();
       textLayer?.cancel();
     };
-  }, [onError, pageNumber, pdfDocument, scale]);
+  }, [density, onError, pageNumber, pdfDocument, scale]);
 
   return (
     <>
@@ -1406,14 +1518,11 @@ function PdfPreview({
   const viewportRef = useRef<HTMLDivElement>(null);
   const editInputRef = useRef<HTMLTextAreaElement>(null);
   const editPopoverRef = useRef<HTMLDivElement>(null);
+  const density = useRenderDensity();
+  // In edit mode a click on text, or a selection, opens the editor for it.
+  const [editMode, setEditMode] = useState(false);
   // Positions are in the viewport's scrolled content, so they move with the
-  // page. `top` sits below the selection and `above` is its top edge.
-  const [selectionChip, setSelectionChip] = useState<{
-    selection: PdfTextSelection;
-    left: number;
-    top: number;
-    above: number;
-  } | null>(null);
+  // page. `top` sits below the text and `above` is its top edge.
   const [textEdit, setTextEdit] = useState<{
     edit: PdfTextEdit;
     left: number;
@@ -1456,9 +1565,7 @@ function PdfPreview({
   const pageCount = pageSizes.length;
   const widestPage =
     pageSizes.reduce((widest, size) => Math.max(widest, size.width), 0) || 612;
-  const scale = fitWidth
-    ? Math.min(2, Math.max(320, containerWidth - 64) / widestPage)
-    : zoom;
+  const scale = fitWidth ? Math.min(2, Math.max(200, containerWidth) / widestPage) : zoom;
 
   useEffect(() => {
     if (!bytes) {
@@ -1589,7 +1696,13 @@ function PdfPreview({
     let wasHidden = container.clientHeight === 0;
     const observer = new ResizeObserver(() => {
       const hidden = container.clientHeight === 0;
-      if (!hidden) setContainerWidth(container.clientWidth);
+      if (!hidden) {
+        // Fit uses the width inside the padding, which is narrower on phones.
+        const style = getComputedStyle(container);
+        setContainerWidth(
+          container.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+        );
+      }
       if (wasHidden && !hidden) restoreAnchor();
       wasHidden = hidden;
       updateVisiblePages();
@@ -1744,7 +1857,7 @@ function PdfPreview({
     event: React.MouseEvent<HTMLDivElement>,
     pageNumber: number,
   ) => {
-    if (!onLocateSource || !pdfDocument) return;
+    if (!onLocateSource || !pdfDocument || editMode) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const pointerX = event.clientX - bounds.left;
     const pointerY = event.clientY - bounds.top;
@@ -1760,9 +1873,8 @@ function PdfPreview({
   };
 
   useEffect(() => {
-    setSelectionChip(null);
     setTextEdit(null);
-  }, [containerWidth, pdfDocument, scale]);
+  }, [containerWidth, editMode, pdfDocument, scale]);
 
   const textEditReady = textEdit?.edit.kind === "ready";
   useEffect(() => {
@@ -1792,15 +1904,9 @@ function PdfPreview({
       ?.closest(".textLayer")
       ?.closest<HTMLDivElement>(".pdf-page") ?? null;
 
-  const captureSelection = (event: React.MouseEvent<HTMLDivElement>) => {
+  // The selected text on one page, with where an editor for it should open.
+  const selectedText = () => {
     const viewport = viewportRef.current;
-    if (!onPrepareEdit || !viewport) return;
-    if ((event.target as Element).closest(".pdf-edit")) return;
-    // A double-click selects a word too, but it keeps meaning "go to source".
-    if (event.detail > 1) {
-      setSelectionChip(null);
-      return;
-    }
     const selection = window.getSelection();
     const range =
       selection && selection.rangeCount > 0 && !selection.isCollapsed
@@ -1813,6 +1919,7 @@ function PdfPreview({
       : [];
     const pageNumber = pageElement ? pageElementsRef.current.indexOf(pageElement) + 1 : 0;
     if (
+      !viewport ||
       !range ||
       !pageElement ||
       pageOf(range.endContainer) !== pageElement ||
@@ -1820,9 +1927,7 @@ function PdfPreview({
       rects.length === 0 ||
       pageNumber < 1
     ) {
-      setSelectionChip(null);
-      setTextEdit(null);
-      return;
+      return null;
     }
 
     const pageBounds = pageElement.getBoundingClientRect();
@@ -1833,42 +1938,51 @@ function PdfPreview({
       x: (clientX - pageBounds.left) / scale,
       y: (clientY - pageBounds.top) / scale,
     });
-    setTextEdit(null);
-    setSelectionChip({
+    return {
       selection: {
         page: pageNumber,
         text,
         start: toPage(first.left + 1, first.top + first.height / 2),
         end: toPage(last.right - 1, last.top + last.height / 2),
       },
-      left: Math.min(
-        last.right - viewBounds.left + viewport.scrollLeft,
-        viewport.scrollLeft + viewport.clientWidth - 128,
-      ),
+      right: last.right - viewBounds.left + viewport.scrollLeft,
       top: last.bottom - viewBounds.top + viewport.scrollTop + 6,
       above: first.top - viewBounds.top + viewport.scrollTop - 6,
-    });
+    };
   };
 
-  const openTextEdit = () => {
+  const editClickedText = (event: React.MouseEvent<HTMLDivElement>) => {
     const viewport = viewportRef.current;
-    if (!selectionChip || !onPrepareEdit || !viewport) return;
-    const edit = onPrepareEdit(selectionChip.selection);
+    if (!editMode || !onPrepareEdit || !viewport || event.button !== 0) return;
+    if ((event.target as Element).closest(".pdf-edit")) return;
+    // The second click of a double-click would only reselect a word.
+    if (event.detail > 1) return;
+    let target = selectedText();
+    // A plain click edits the line of text under the pointer.
+    const span = target ? null : (event.target as Element).closest(".textLayer span");
+    if (span?.textContent?.trim()) {
+      const range = document.createRange();
+      range.selectNodeContents(span);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+      target = selectedText();
+    }
+    if (!target) {
+      setTextEdit(null);
+      return;
+    }
+    const edit = onPrepareEdit(target.selection);
     setTextEdit({
       edit,
       left: Math.max(
         viewport.scrollLeft + 8,
-        Math.min(
-          selectionChip.left - 160,
-          viewport.scrollLeft + viewport.clientWidth - 336,
-        ),
+        Math.min(target.right - 160, viewport.scrollLeft + viewport.clientWidth - 336),
       ),
-      top: selectionChip.top,
-      above: selectionChip.above,
+      top: target.top,
+      above: target.above,
       error: "",
     });
     setEditValue(edit.kind === "ready" ? edit.text : "");
-    setSelectionChip(null);
   };
 
   const closeTextEdit = () => {
@@ -1881,7 +1995,7 @@ function PdfPreview({
     if (!textEdit.edit.apply(editValue)) {
       setTextEdit({
         ...textEdit,
-        error: "The source changed while this was open. Select the text again.",
+        error: "The source changed while this was open. Click the text again.",
       });
       return;
     }
@@ -1985,8 +2099,31 @@ function PdfPreview({
           >
             <MagnifyingGlass />
           </button>
+          {onPrepareEdit && (
+            <button
+              className={`icon-button ${editMode ? "active" : ""}`}
+              type="button"
+              disabled={!bytes}
+              onClick={() => setEditMode(!editMode)}
+              aria-label="Edit mode"
+              aria-pressed={editMode}
+              title="Edit mode: click text in the PDF to change it"
+            >
+              <PencilSimple />
+            </button>
+          )}
         </div>
       </header>
+
+      {editMode && bytes && (
+        <div className="edit-mode-notice">
+          <PencilSimple size={15} aria-hidden="true" />
+          <span>Edit mode. Click any text to change it, or select a passage.</span>
+          <button type="button" onClick={() => setEditMode(false)}>
+            Done
+          </button>
+        </div>
+      )}
 
       {stale && bytes && (
         <div className="stale-notice">
@@ -2047,11 +2184,11 @@ function PdfPreview({
       )}
 
       <div
-        className="pdf-viewport"
+        className={`pdf-viewport${editMode ? " editing" : ""}`}
         ref={viewportRef}
         tabIndex={0}
         onScroll={updateVisiblePages}
-        onMouseUp={captureSelection}
+        onMouseUp={editClickedText}
       >
         {!bytes && !busy && (
           <div className="empty-state">
@@ -2117,6 +2254,7 @@ function PdfPreview({
                     pageNumber={pageNumber}
                     pageCount={pageCount}
                     scale={scale}
+                    density={density}
                     onError={setPreviewError}
                   />
                 )}
@@ -2135,19 +2273,6 @@ function PdfPreview({
               </div>
             );
           })}
-
-        {selectionChip && (
-          <button
-            type="button"
-            className="pdf-edit pdf-edit-chip"
-            style={{ left: selectionChip.left, top: selectionChip.top }}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={openTextEdit}
-          >
-            <PencilSimple aria-hidden="true" />
-            Edit text
-          </button>
-        )}
 
         {textEdit && (
           <div
@@ -2382,8 +2507,10 @@ function ProjectsScreen({
   openProjectId,
   openProjectName,
   busy,
+  importDisabled,
   onOpen,
   onNew,
+  onImport,
   onSaveCurrent,
   onDelete,
   onRefresh,
@@ -2399,8 +2526,10 @@ function ProjectsScreen({
   openProjectId: string;
   openProjectName: string;
   busy: boolean;
+  importDisabled: boolean;
   onOpen: (project: DriveProject) => void;
   onNew: () => void;
+  onImport: () => void;
   onSaveCurrent: () => void;
   onDelete: (project: DriveProject) => void;
   onRefresh: () => void;
@@ -2409,6 +2538,7 @@ function ProjectsScreen({
   onClose: () => void;
 }) {
   const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const headerRef = useRef<HTMLElement | null>(null);
   const backdropRef = useRef<HTMLCanvasElement | null>(null);
   const [confirmId, setConfirmId] = useState("");
   const signedIn = account === "signed-in";
@@ -2422,6 +2552,8 @@ function ProjectsScreen({
   useEffect(() => {
     headingRef.current?.focus();
   }, []);
+
+  useEffect(() => (headerRef.current ? observeWrapping([headerRef.current]) : undefined), []);
 
   useEffect(() => {
     const canvas = backdropRef.current;
@@ -2442,7 +2574,7 @@ function ProjectsScreen({
       <canvas ref={backdropRef} className="projects-backdrop" aria-hidden="true" />
       <div className="projects-scroll">
         <div className={`projects-inner${account === "signed-out" ? " signed-out" : ""}`}>
-          <header className="projects-header">
+          <header className="projects-header" ref={headerRef}>
             <div>
               <h2 id="projects-heading" ref={headingRef} tabIndex={-1}>
                 Your <span className="accent">projects</span>
@@ -2450,6 +2582,17 @@ function ProjectsScreen({
               <p>{subtitle}</p>
             </div>
             <div className="projects-header-actions">
+              {!signedIn && (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={onImport}
+                  disabled={importDisabled}
+                >
+                  <FolderOpen aria-hidden="true" />
+                  Import project
+                </button>
+              )}
               <button type="button" className="secondary-button" onClick={onClose}>
                 <PencilSimple aria-hidden="true" />
                 Open editor
@@ -2473,6 +2616,15 @@ function ProjectsScreen({
               >
                 <Plus weight="bold" aria-hidden="true" />
                 <span>New project</span>
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={onImport}
+                disabled={importDisabled || expired}
+              >
+                <FolderOpen aria-hidden="true" />
+                Import project
               </button>
               {!openProjectId && (
                 <button
@@ -2506,8 +2658,8 @@ function ProjectsScreen({
 
           {account === "signed-out" && (
             <div className="projects-sign-in">
-              <button type="button" className="compile-button" onClick={onSignIn}>
-                <GoogleLogo weight="bold" aria-hidden="true" />
+              <button type="button" className="google-sign-in" onClick={onSignIn}>
+                <GoogleMark />
                 <span>Sign in with Google</span>
               </button>
             </div>
@@ -2516,9 +2668,9 @@ function ProjectsScreen({
           {!signedIn ? null : expired ? (
             <div className="projects-message" role="alert">
               <span>Your Google sign-in expired.</span>
-              <button type="button" className="secondary-button" onClick={onSignIn}>
-                <GoogleLogo aria-hidden="true" />
-                Sign in again
+              <button type="button" className="google-sign-in compact" onClick={onSignIn}>
+                <GoogleMark />
+                <span>Sign in with Google</span>
               </button>
             </div>
           ) : projects === "loading" ? (
@@ -2535,7 +2687,7 @@ function ProjectsScreen({
             </div>
           ) : projects.length === 0 ? (
             <p className="projects-message">
-              No projects in Google Drive yet. Create one, or save the project you have open.
+              No projects in Google Drive yet. Create or import one, or save the project you have open.
             </p>
           ) : (
             <ul className="projects-list">
@@ -2656,10 +2808,24 @@ export default function App() {
     "idle" | "saving" | "saved" | "error" | "expired"
   >("idle");
   const [driveError, setDriveError] = useState(googleSignIn.error ?? "");
+  const [importError, setImportError] = useState("");
   const [driveProjects, setDriveProjects] = useState<DriveProject[] | "loading" | null>(
     "loading",
   );
   const [accountSettings, setAccountSettings] = useState<AccountSettings | null | undefined>(undefined);
+  const [localChatKey, setLocalChatKey] = useState(
+    () => safeStorageRead(LOCAL_CHAT_KEY, "") || newLocalChatKey(),
+  );
+  // Read inside Drive actions, which finish after later renders.
+  const localChatKeyRef = useRef(localChatKey);
+  const [chatAliases, setChatAliases] = useState(readChatAliases);
+  const [assistantRequest, setAssistantRequest] = useState<{ id: number; text: string } | null>(null);
+  const chatKey = driveProjectId ? (chatAliases[driveProjectId] ?? `drive:${driveProjectId}`) : localChatKey;
+  // The open project no longer has a Drive file; it keeps the chat it had.
+  const keepChatLocally = (driveId: string) => {
+    localChatKeyRef.current = chatAliases[driveId] ?? `drive:${driveId}`;
+    setLocalChatKey(localChatKeyRef.current);
+  };
 
   const editorRef = useRef<EditorView | null>(null);
   const compilerRef = useRef<CompilerSession | null>(null);
@@ -2753,6 +2919,8 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [documentName, project]);
 
+  useEffect(() => observeWrapping([...document.querySelectorAll(".pane-header")]), []);
+
   useEffect(() => {
     try {
       window.localStorage.setItem(SPLIT_KEY, String(split));
@@ -2784,6 +2952,15 @@ export default function App() {
       // The panel still opens when local storage is unavailable.
     }
   }, [assistantOpen]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LOCAL_CHAT_KEY, localChatKey);
+      window.localStorage.setItem(CHAT_ALIASES_KEY, JSON.stringify(chatAliases));
+    } catch {
+      // Without local storage, the chat lasts until the page closes.
+    }
+  }, [localChatKey, chatAliases]);
 
   useEffect(() => {
     if (!fileMenuOpen) return;
@@ -2857,6 +3034,9 @@ export default function App() {
         mainFile,
       };
       const nextName = sanitizeFilename(name);
+      // A different project gets its own assistant chat.
+      localChatKeyRef.current = newLocalChatKey();
+      setLocalChatKey(localChatKeyRef.current);
       setProject(next);
       setDocumentName(nextName);
       setProjectRevision((value) => value + 1);
@@ -2876,6 +3056,12 @@ export default function App() {
     setDiagnosticsOpen(true);
     setCompileStatus({ phase: "error", label });
   }, []);
+
+  // The open project was only in this browser and now has a Drive file, so its chat goes with it.
+  const keepChatFor = (driveId: string) => {
+    const key = localChatKeyRef.current;
+    setChatAliases((current) => ({ ...current, [driveId]: key }));
+  };
 
   const uploadProject = (
     session: GoogleSession,
@@ -2968,11 +3154,13 @@ export default function App() {
 
   const closeProjects = () => {
     projectsFocusRef.current = "button";
+    setImportError("");
     setProjectsOpen(false);
   };
 
   const showEditor = () => {
     projectsFocusRef.current = "editor";
+    setImportError("");
     setProjectsOpen(false);
   };
 
@@ -3028,7 +3216,9 @@ export default function App() {
       );
       setDriveProjectId("");
       setDriveDirty(false);
-      setDriveProjectId(await uploadProject(session, snapshot, ""));
+      const id = await uploadProject(session, snapshot, "");
+      keepChatFor(id);
+      setDriveProjectId(id);
       setDriveReady(true);
       showEditor();
     });
@@ -3040,7 +3230,9 @@ export default function App() {
         project: projectRef.current,
         documentName: documentNameRef.current,
       };
-      setDriveProjectId(await uploadProject(session, snapshot, ""));
+      const id = await uploadProject(session, snapshot, "");
+      if (!driveProjectId) keepChatFor(id);
+      setDriveProjectId(id);
       setDriveReady(true);
       await refreshDriveProjects();
     });
@@ -3055,10 +3247,14 @@ export default function App() {
       }
       await deleteDriveFile(session, target.id);
       if (isOpen) {
+        keepChatLocally(target.id);
         setDriveProjectId("");
         setDriveDirty(false);
         setDriveState("idle");
+      } else {
+        forgetChat(chatAliases[target.id] ?? `drive:${target.id}`);
       }
+      setChatAliases(({ [target.id]: _removed, ...rest }) => rest);
       await refreshDriveProjects();
     });
   };
@@ -3186,6 +3382,7 @@ export default function App() {
       } catch (error) {
         if (cancelled) return;
         if (error instanceof GoogleRequestError && error.status === 404) {
+          keepChatLocally(driveProjectId);
           setDriveProjectId("");
           setDriveDirty(false);
           setDriveReady(true);
@@ -3238,6 +3435,7 @@ export default function App() {
       event.target.value = "";
       if (!file) return;
 
+      setImportError("");
       try {
         if (file.size > MAX_IMPORT_BYTES) {
           throw new Error("Project archives must be 25 MiB or smaller.");
@@ -3275,18 +3473,31 @@ export default function App() {
         // to Google Drive as a new project straight away.
         if (googleSession) {
           void runDriveAction(async (session) => {
-            setDriveProjectId(await uploadProject(session, snapshot, ""));
+            const id = await uploadProject(session, snapshot, "");
+            keepChatFor(id);
+            setDriveProjectId(id);
             setDriveReady(true);
           });
         }
+        if (projectsOpen) showEditor();
       } catch (error) {
-        reportError(
-          error instanceof Error ? error.message : "The project could not be imported.",
-          "Import failed",
-        );
+        const message =
+          error instanceof Error ? error.message : "The project could not be imported.";
+        // The Projects screen hides the diagnostics panel, so it shows the reason too.
+        setImportError(message);
+        reportError(message, "Import failed");
       }
     },
-    [flushDriveSave, googleSession, loadProject, reportError, runDriveAction, uploadProject],
+    [
+      flushDriveSave,
+      googleSession,
+      loadProject,
+      projectsOpen,
+      reportError,
+      runDriveAction,
+      showEditor,
+      uploadProject,
+    ],
   );
 
   const downloadPdf = useCallback(() => {
@@ -3406,7 +3617,7 @@ export default function App() {
       setRawLogOpen(true);
       setCompileStatus({
         phase: "error",
-        label: "Compile failed",
+        label: COMPILE_FAILED_LABEL,
         duration,
       });
       setProgress("");
@@ -3513,6 +3724,21 @@ export default function App() {
   const closeAssistant = () => {
     setAssistantOpen(false);
     if (activePane === "assistant") setActivePane("source");
+  };
+
+  // Only errors from pdfLaTeX itself; sign-in, Drive and size errors are not the assistant's to fix.
+  const canFixWithAssistant =
+    compileStatus.phase === "error" && compileStatus.label === COMPILE_FAILED_LABEL && diagnostics.length > 0;
+
+  const fixWithAssistant = () => {
+    const errors = diagnostics.slice(0, MAX_FIX_ERRORS).map((diagnostic) => {
+      const file = diagnostic.file ?? project.mainFile;
+      return `- ${diagnostic.line ? `${file}:${diagnostic.line}` : file}: ${diagnostic.message}`;
+    });
+    const more = diagnostics.length > MAX_FIX_ERRORS ? `\n(and ${diagnostics.length - MAX_FIX_ERRORS} more)` : "";
+    const plural = diagnostics.length === 1 ? "this compile error" : "these compile errors";
+    setAssistantRequest({ id: Date.now(), text: `Fix ${plural}:\n${errors.join("\n")}${more}` });
+    openAssistant();
   };
 
   const revealSourceLine = (file: string | undefined, lineNumber: number) => {
@@ -3850,7 +4076,7 @@ export default function App() {
                 : "Sign in with Google to save projects and API keys to your Google Drive"
             }
           >
-            {googleActive ? <Cloud aria-hidden="true" /> : <GoogleLogo aria-hidden="true" />}
+            {googleActive ? <Cloud aria-hidden="true" /> : <GoogleMark />}
             <span>
               {googleActive
                 ? "Projects"
@@ -3876,12 +4102,14 @@ export default function App() {
           email={googleSession?.email ?? ""}
           projects={driveProjects}
           expired={driveState === "expired"}
-          error={driveError}
+          error={importError || driveError}
           openProjectId={driveProjectId}
           openProjectName={sanitizeFilename(documentName)}
           busy={driveBusy || driveSyncing}
+          importDisabled={importBlocked}
           onOpen={openDriveProject}
           onNew={newDriveProject}
+          onImport={() => importInputRef.current?.click()}
           onSaveCurrent={saveProjectToDrive}
           onDelete={deleteDriveProject}
           onRefresh={() => void refreshDriveProjects()}
@@ -3995,13 +4223,13 @@ export default function App() {
         </button>
 
         <button
-          className={`toolbar-button${showAssistant ? " active" : ""}`}
+          className={`toolbar-button assistant-toggle${showAssistant ? " active" : ""}`}
           type="button"
           aria-pressed={showAssistant}
           onClick={() => (showAssistant ? closeAssistant() : openAssistant())}
           title="AI assistant"
         >
-          <Sparkle />
+          <Sparkle weight="fill" />
           <span>Assistant</span>
         </button>
 
@@ -4328,6 +4556,8 @@ export default function App() {
         <AssistantPanel
           host={assistantHost}
           hidden={!showAssistant}
+          chatKey={chatKey}
+          request={assistantRequest}
           onClose={closeAssistant}
           accountSettings={accountSettings}
           onSaveAccountSettings={
@@ -4371,6 +4601,12 @@ export default function App() {
 
         {diagnosticsOpen && (
           <div className="diagnostics-body">
+            {canFixWithAssistant && (
+              <button type="button" className="diagnostics-fix" onClick={fixWithAssistant}>
+                <Sparkle weight="fill" aria-hidden="true" />
+                Fix with assistant
+              </button>
+            )}
             {diagnostics.length > 0 ? (
               <ul className="diagnostic-list">
                 {diagnostics.map((diagnostic, index) => (

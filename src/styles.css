@@ -36,7 +36,6 @@
   --text-faint: rgb(245 246 246 / 52%);
   --amber: #6b3d00;
   --amber-text: #f2a65a;
-  --amber-wash: rgb(107 61 0 / 40%);
   --on-amber: #fff;
   --primary: #f2a65a;
   --primary-hover: #f8bc7f;
@@ -44,7 +43,10 @@
   --btn-ring: rgb(255 255 255 / 14%);
   --btn-ring-hover: rgb(255 255 255 / 28%);
   --btn-hover: rgb(255 255 255 / 7%);
-  --btn-active: rgb(242 166 90 / 14%);
+  --btn-active: rgb(85 85 85 / 35%);
+  --btn-active-ring: #555555;
+  --graphite: #212222;
+  --graphite-icon: #555555;
   --teal: #004d47;
   --teal-text: #5fd3c4;
   --navy: #1a2e52;
@@ -156,7 +158,7 @@ button:disabled {
   grid-template-rows: 38px minmax(0, 1fr);
 }
 
-.app-shell.projects-open> :not(.title-bar, .projects-screen) {
+.app-shell.projects-open > :not(.title-bar, .projects-screen) {
   display: none;
 }
 
@@ -393,6 +395,27 @@ button:disabled {
   color: rgb(0 0 0 / 65%);
 }
 
+/* The editor's Compile is black with a grey play mark; the Projects page keeps the orange buttons. */
+.command-bar .compile-button:not(.cancel) {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--btn-ring);
+  color: var(--text-strong);
+}
+
+.command-bar .compile-button:not(.cancel):hover {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--btn-ring-hover);
+}
+
+.command-bar .compile-button:not(.cancel) svg {
+  color: var(--graphite-icon);
+}
+
+.command-bar .compile-button:not(.cancel) kbd {
+  border-left-color: var(--btn-ring);
+  color: var(--text-faint);
+}
+
 /* Phones only: Import, Export and the downloads share one menu. */
 .file-menu {
   position: relative;
@@ -510,31 +533,42 @@ button:disabled {
 
 .pane {
   display: grid;
-  grid-template-rows: 36px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
   background: var(--surface);
 }
 
+/* The heading grows to fill the first line, so whatever wraps below it is centred. */
 .pane-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  gap: 4px 10px;
   min-width: 0;
-  padding: 0 10px 0 12px;
+  min-height: 36px;
+  padding: 4px 10px 4px 12px;
   border-bottom: 1px solid var(--ring);
   background: var(--surface);
 }
 
+/* As tall as a row of buttons, so a wrapped header keeps even spacing. */
 .pane-heading-group {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   min-width: 0;
+  min-height: 26px;
   gap: 8px;
 }
 
-.pane-heading-group>svg {
+.pane-header[data-wrapped] .pane-heading-group {
+  justify-content: center;
+}
+
+.pane-heading-group > svg {
   color: var(--amber-text);
 }
 
@@ -669,10 +703,10 @@ button:disabled {
   color: var(--text-strong);
 }
 
-/* The active file carries an orange marker on an orange wash. */
+/* The active file carries a light marker on a grey wash. */
 .project-explorer button.active {
-  background: var(--amber-wash);
-  box-shadow: inset 2px 0 0 var(--amber-text);
+  background: var(--btn-active);
+  box-shadow: inset 2px 0 0 var(--text-muted);
   color: #fff;
 }
 
@@ -681,10 +715,10 @@ button:disabled {
 }
 
 .project-explorer button.active svg {
-  color: var(--amber-text);
+  color: var(--text-strong);
 }
 
-.project-explorer button>span {
+.project-explorer button > span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -912,11 +946,7 @@ button:disabled {
 }
 
 .preview-pane {
-  grid-template-rows: 36px auto auto minmax(0, 1fr);
-}
-
-.preview-header {
-  gap: 10px;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
 }
 
 .freshness {
@@ -943,7 +973,9 @@ button:disabled {
 
 .preview-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: 2px;
   min-width: 0;
 }
@@ -983,7 +1015,7 @@ button:disabled {
 
 .icon-button.active,
 .zoom-value.active {
-  color: var(--amber-text);
+  color: var(--text-strong);
   background: var(--btn-active);
 }
 
@@ -1025,9 +1057,48 @@ button:disabled {
   font-weight: 500;
 }
 
+.edit-mode-notice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--ring);
+  color: var(--text);
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.edit-mode-notice span {
+  flex: 1;
+  min-width: 0;
+}
+
+.edit-mode-notice button {
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--btn-ring-hover);
+  color: var(--text-strong);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+.edit-mode-notice button:hover {
+  background: #fff;
+  color: #000;
+}
+
 .pdf-viewport {
   position: relative;
-  grid-row: 4;
+  grid-row: 5;
   min-width: 0;
   min-height: 0;
   overflow: auto;
@@ -1089,7 +1160,7 @@ button:disabled {
   transform-origin: 0% 0%;
 }
 
-.pdf-page .textLayer> :not(.markedContent),
+.pdf-page .textLayer > :not(.markedContent),
 .pdf-page .textLayer .markedContent span:not(.markedContent) {
   --font-height: 0;
   --scale-x: 1;
@@ -1130,30 +1201,13 @@ button:disabled {
   z-index: 5;
 }
 
-.pdf-edit-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--primary);
-  color: var(--on-primary);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
+/* In edit mode each run of text shows that it can be clicked. */
+.pdf-viewport.editing .textLayer :is(span, br) {
   cursor: pointer;
-  transition: background-color 0.15s ease;
 }
 
-.pdf-edit-chip:hover {
-  background: var(--primary-hover);
-}
-
-.pdf-edit-chip svg {
-  width: 14px;
-  height: 14px;
+.pdf-viewport.editing .textLayer span:hover {
+  background: rgb(85 85 85 / 18%);
 }
 
 .pdf-edit-popover {
@@ -1254,20 +1308,25 @@ button:disabled {
 }
 
 .toolbar-button.active {
-  background: var(--btn-active);
-  box-shadow: inset 0 0 0 1px rgb(242 166 90 / 40%);
-  color: var(--amber-text);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--btn-active-ring);
+  color: var(--text-strong);
+}
+
+.assistant-toggle svg {
+  color: var(--graphite-icon);
 }
 
 /* The source/preview split shares only the width left beside the assistant. */
 .workspace.with-assistant {
   --assistant-width: min(380px, 36vw);
   grid-template-columns:
-    minmax(0, calc((100% - 10px - var(--assistant-width)) * var(--split-ratio))) 10px minmax(0, 1fr) var(--assistant-width);
+    minmax(0, calc((100% - 10px - var(--assistant-width)) * var(--split-ratio)))
+    10px minmax(0, 1fr) var(--assistant-width);
 }
 
 .assistant-pane {
-  grid-template-rows: 36px minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   border-left: 1px solid var(--ring);
 }
 
@@ -1294,7 +1353,7 @@ button:disabled {
 }
 
 /* Each new turn and step rises into place once, on the shared curve. */
-.assistant-log>* {
+.assistant-log > * {
   animation: assistant-rise 0.6s var(--ease) both;
 }
 
@@ -1358,7 +1417,7 @@ button:disabled {
   margin: 0 0 8px;
 }
 
-.assistant-text> :last-child {
+.assistant-text > :last-child {
   margin-bottom: 0;
 }
 
@@ -1391,6 +1450,217 @@ button:disabled {
   color: var(--text);
 }
 
+.assistant-text-plain {
+  white-space: pre-wrap;
+}
+
+.assistant-code {
+  position: relative;
+  margin: 0 0 8px;
+}
+
+.assistant-text .assistant-code > pre {
+  margin: 0;
+  padding-right: 42px;
+}
+
+.assistant-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: var(--chrome);
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.2s ease,
+    color 0.2s ease;
+}
+
+.assistant-code:hover .assistant-code-copy,
+.assistant-code-copy:focus-visible,
+.assistant-code-copy[aria-label="Copied"],
+.assistant-code-copy[aria-label="Could not copy"] {
+  opacity: 1;
+}
+
+/* Touch screens have no hover, so the button always shows. */
+@media (hover: none) {
+  .assistant-code-copy {
+    opacity: 1;
+  }
+}
+
+.assistant-code-copy:hover {
+  color: var(--text-strong);
+}
+
+.assistant-code-copy[aria-label="Copied"] {
+  color: var(--teal-text);
+}
+
+.assistant-code-copy[aria-label="Could not copy"] {
+  color: var(--red);
+}
+
+.assistant-code-copy svg {
+  width: 14px;
+  height: 14px;
+}
+
+.assistant-text h1,
+.assistant-text h2,
+.assistant-text h3,
+.assistant-text h4,
+.assistant-text h5,
+.assistant-text h6 {
+  margin: 14px 0 6px;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.assistant-text h1 {
+  font-size: 16px;
+}
+
+.assistant-text h2 {
+  font-size: 15px;
+}
+
+.assistant-text h3 {
+  font-size: 14px;
+}
+
+.assistant-text > :first-child {
+  margin-top: 0;
+}
+
+.assistant-text a {
+  color: var(--teal-text);
+  text-decoration: underline;
+  text-decoration-color: rgb(95 211 196 / 40%);
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.3s ease;
+}
+
+.assistant-text a:hover {
+  text-decoration-color: currentColor;
+}
+
+.assistant-text del {
+  color: var(--text-muted);
+}
+
+.assistant-text li + li {
+  margin-top: 2px;
+}
+
+.assistant-text li > p {
+  margin: 0;
+}
+
+.assistant-text li > ul,
+.assistant-text li > ol {
+  margin: 2px 0 0;
+}
+
+/* A checkbox takes the place of the bullet, so lists can mix both. */
+.assistant-text .task-list-item {
+  margin-left: -18px;
+  list-style: none;
+}
+
+.assistant-text .task-list-item input {
+  margin: 0 6px 0 0;
+  vertical-align: -1px;
+  accent-color: var(--teal-text);
+}
+
+.assistant-text blockquote {
+  margin: 0 0 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--ring-strong);
+  color: var(--text-muted);
+}
+
+.assistant-text hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--ring);
+}
+
+/* Tables scroll sideways in the narrow panel instead of squeezing their columns. */
+.assistant-table {
+  margin: 0 0 8px;
+  overflow-x: auto;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px var(--ring-strong);
+}
+
+.assistant-table table {
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  overflow-wrap: normal;
+}
+
+.assistant-table th,
+.assistant-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--ring);
+  text-align: left;
+  vertical-align: top;
+}
+
+.assistant-table th {
+  color: var(--text-strong);
+  font-weight: 650;
+}
+
+.assistant-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.assistant-text .katex {
+  font-size: 1.1em;
+}
+
+/* Long equations scroll sideways rather than overflow the panel. */
+.assistant-text .katex-display {
+  margin: 0 0 8px;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Thinking keeps the muted look of its container. */
+.assistant-thinking-markdown {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.assistant-thinking-markdown strong,
+.assistant-thinking-markdown h1,
+.assistant-thinking-markdown h2,
+.assistant-thinking-markdown h3,
+.assistant-thinking-markdown h4,
+.assistant-thinking-markdown h5,
+.assistant-thinking-markdown h6 {
+  color: inherit;
+  font-size: inherit;
+}
+
 /* Steps read as a timeline: a hairline joins each step to the one before it. */
 .assistant-tool {
   position: relative;
@@ -1403,7 +1673,7 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
-.assistant-tool+.assistant-tool::before {
+.assistant-tool + .assistant-tool::before {
   content: "";
   position: absolute;
   left: 7.5px;
@@ -1433,6 +1703,108 @@ button:disabled {
 
 .assistant-tool.error svg {
   color: var(--red);
+}
+
+/* What a request carried. It is information, not a step that succeeds or fails. */
+.assistant-tool.context svg {
+  color: var(--text-faint);
+}
+
+.assistant-error-group {
+  display: grid;
+  gap: 8px;
+}
+
+.assistant-retry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding-left: 12px;
+}
+
+.assistant-retry .assistant-pill {
+  height: 26px;
+  padding: 0 12px;
+  font-size: 11px;
+}
+
+/* In the log the menu opens downwards, where the log can scroll to show it. */
+.assistant-retry .assistant-menu {
+  top: calc(100% + 6px);
+  bottom: auto;
+}
+
+.assistant-thinking {
+  display: grid;
+  gap: 6px;
+}
+
+.assistant-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+summary.assistant-thinking-head {
+  width: fit-content;
+  list-style: none;
+  cursor: pointer;
+  transition: color 0.3s ease;
+}
+
+summary.assistant-thinking-head::-webkit-details-marker {
+  display: none;
+}
+
+summary.assistant-thinking-head:hover {
+  color: var(--text-strong);
+}
+
+.assistant-thinking.done .assistant-thinking-head > svg:first-child {
+  color: var(--teal-text);
+}
+
+.assistant-thinking-head .assistant-thinking-caret {
+  width: 9px;
+  height: 9px;
+  opacity: 0.6;
+  transition: transform 0.3s var(--ease);
+}
+
+.assistant-thinking.done .assistant-thinking-caret {
+  color: var(--text-muted);
+}
+
+.assistant-thinking[open] .assistant-thinking-caret {
+  transform: rotate(180deg);
+}
+
+/* While the model reasons, its last few lines show beside the timeline, fading out at the top. */
+.assistant-thinking-live {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  max-height: calc(3 * 1.6em);
+  margin: 0 0 0 26px;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11.5px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 25%), #000 1.4em);
+}
+
+.assistant-thinking-text {
+  max-height: 260px;
+  margin: 0 0 0 7px;
+  padding: 2px 0 2px 18px;
+  overflow: auto;
+  border-left: 1px solid var(--ring-strong);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .assistant-error {
@@ -1832,72 +2204,187 @@ button:disabled {
   gap: 2px;
   min-width: 0;
   margin-left: -6px;
+  container: assistant-bar / inline-size;
 }
 
-/* Pickers read as quiet captions; the select fills the chip, so any part of it opens the menu. */
+/* In a narrow panel the tag picker keeps only its @ icon, leaving room for the model name. */
+@container assistant-bar (max-width: 400px) {
+  .assistant-chip.tag .assistant-chip-text,
+  .assistant-chip.tag .assistant-chip-caret {
+    display: none;
+  }
+}
+
+/* Pickers read as quiet captions until hovered or opened. */
 .assistant-chip {
   position: relative;
   display: inline-flex;
   flex: none;
-  align-items: center;
   min-width: 0;
-  border-radius: 999px;
-  color: var(--text-muted);
-  transition:
-    background-color 0.3s ease,
-    color 0.3s ease;
 }
 
 .assistant-chip.model {
   flex: 0 1 auto;
 }
 
-.assistant-chip:hover,
-.assistant-chip:focus-within {
+.assistant-chip > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 999px;
+  outline: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: 600 11px/1 var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.3s ease,
+    color 0.3s ease;
+}
+
+.assistant-chip > button:hover:not(:disabled),
+.assistant-chip > button[aria-expanded="true"] {
   background: var(--btn-hover);
   color: var(--text-strong);
 }
 
-.assistant-chip svg {
-  position: absolute;
-  left: 8px;
-  width: 13px;
-  height: 13px;
-  color: var(--teal-text);
-  pointer-events: none;
-}
-
-.assistant-chip select {
-  min-width: 0;
-  max-width: 100%;
-  height: 26px;
-  padding: 0 20px 0 26px;
-  border: 0;
-  border-radius: 999px;
-  outline: 0;
-  appearance: none;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 5'%3E%3Cpath d='M.5.5 4 4 7.5.5' fill='none' stroke='%23f5f6f6' stroke-opacity='.5'/%3E%3C/svg%3E") no-repeat right 8px center / 7px 5px;
-  color: inherit;
-  font: 600 11px/26px var(--sans);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
-  field-sizing: content;
-}
-
-.assistant-chip select:focus-visible {
+.assistant-chip > button:focus-visible {
   box-shadow: inset 0 0 0 1px var(--focus);
 }
 
-.assistant-chip select:disabled {
+.assistant-chip > button:disabled {
   cursor: default;
   opacity: 0.5;
 }
 
-.assistant-chip option,
-.assistant-chip optgroup {
-  background: #0b0d10;
+.assistant-chip > button > svg:first-child {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--teal-text);
+}
+
+.assistant-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.assistant-chip.model .assistant-chip-text {
+  max-width: 150px;
+}
+
+.assistant-chip-caret {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  opacity: 0.6;
+  transition: transform 0.3s var(--ease);
+}
+
+[aria-expanded="true"] > .assistant-chip-caret {
+  transform: rotate(180deg);
+}
+
+.assistant-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  min-width: 180px;
+  max-width: min(300px, calc(100vw - 32px));
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--ring-strong);
+  border-radius: 14px;
+  outline: 0;
+  background: var(--surface);
+  animation: assistant-menu-in 0.2s var(--ease) both;
+}
+
+@keyframes assistant-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.assistant-menu [role="group"] {
+  display: grid;
+  gap: 2px;
+}
+
+.assistant-menu [role="group"] + [role="group"] {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--ring);
+}
+
+.assistant-menu-label {
+  padding: 8px 10px 4px;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  word-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.assistant-menu-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.assistant-menu.mono .assistant-menu-option {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.assistant-menu-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.assistant-menu-option.active {
+  background: var(--btn-hover);
   color: var(--text-strong);
+}
+
+.assistant-menu-option[aria-selected="true"] {
+  color: var(--text-strong);
+}
+
+.assistant-menu-option svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--teal-text);
+}
+
+.assistant-menu-empty {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 
 .assistant-send {
@@ -1962,7 +2449,6 @@ button:disabled {
     opacity: 0.9;
     transform: scale(1);
   }
-
   to {
     opacity: 0;
     transform: scale(1.7);
@@ -1995,7 +2481,7 @@ button:disabled {
   gap: 6px;
 }
 
-.assistant-field>span {
+.assistant-field > span {
   color: var(--text-muted);
   font-size: 10px;
   font-weight: 600;
@@ -2341,7 +2827,7 @@ button:disabled {
   box-shadow: inset 0 0 0 1px var(--ring-strong);
 }
 
-.preview-error>svg {
+.preview-error > svg {
   color: var(--red);
 }
 
@@ -2406,7 +2892,7 @@ button:disabled {
   background: var(--hover);
 }
 
-.diagnostics-summary>span {
+.diagnostics-summary > span {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -2420,11 +2906,14 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.diagnostics-summary>span:first-child svg {
+.diagnostics-summary > span:first-child svg {
   color: var(--teal-text);
 }
 
-.diagnostics:has(.diagnostic-list) .diagnostics-summary>span:first-child svg {
+.diagnostics:has(.diagnostic-list)
+  .diagnostics-summary
+  > span:first-child
+  svg {
   color: var(--red);
 }
 
@@ -2433,11 +2922,11 @@ button:disabled {
   font-size: 11px;
 }
 
-.diagnostics-meta>svg {
+.diagnostics-meta > svg {
   transition: transform 0.6s var(--ease);
 }
 
-.diagnostics.open .diagnostics-meta>svg {
+.diagnostics.open .diagnostics-meta > svg {
   transform: rotate(180deg);
 }
 
@@ -2447,10 +2936,46 @@ button:disabled {
   border-top: 1px solid var(--ring);
 }
 
+.diagnostics-fix {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  margin: 10px 14px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--btn-ring);
+  color: var(--text-strong);
+  font: 600 12px/1 var(--sans);
+  cursor: pointer;
+  transition: box-shadow 0.15s ease;
+}
+
+.diagnostics-fix:hover {
+  box-shadow: inset 0 0 0 1px var(--btn-ring-hover);
+}
+
+.diagnostics-fix:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 0 0 1px var(--focus);
+}
+
+.diagnostics-fix svg {
+  width: 13px;
+  height: 13px;
+  color: var(--graphite-icon);
+}
+
 .diagnostic-list {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.diagnostics-fix + .diagnostic-list {
+  border-top: 1px solid var(--ring);
 }
 
 .diagnostic-list li {
@@ -2476,12 +3001,12 @@ button:disabled {
   background: var(--hover);
 }
 
-.diagnostic-list button>svg {
+.diagnostic-list button > svg {
   margin-top: 1px;
   color: var(--red);
 }
 
-.diagnostic-list button>span {
+.diagnostic-list button > span {
   display: grid;
   gap: 3px;
 }
@@ -2494,7 +3019,7 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.diagnostic-list button>span>span {
+.diagnostic-list button > span > span {
   font-size: 12px;
 }
 
@@ -2511,7 +3036,7 @@ button:disabled {
   font-size: 12px;
 }
 
-.raw-log>button {
+.raw-log > button {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2529,7 +3054,7 @@ button:disabled {
   transition: background-color 0.15s ease;
 }
 
-.raw-log>button:hover {
+.raw-log > button:hover {
   background: var(--hover);
 }
 
@@ -2603,6 +3128,7 @@ button:disabled {
   gap: 20px;
   max-width: 880px;
   margin: 0 auto;
+  container: projects / inline-size;
 }
 
 .projects-inner.signed-out {
@@ -2618,6 +3144,51 @@ button:disabled {
   justify-content: center;
 }
 
+/* Google's dark sign-in button: its own four-colour mark on black, without an outline. */
+.google-sign-in {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 44px;
+  padding: 0 22px 0 16px;
+  border: 0;
+  border-radius: 999px;
+  background: #000;
+  color: #e3e3e3;
+  font: 500 14px/20px Roboto, var(--sans);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+
+.google-sign-in:hover {
+  background: #1c1c1d;
+}
+
+.google-sign-in:active {
+  background: #2a2a2b;
+}
+
+.google-sign-in svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+}
+
+.google-sign-in.compact {
+  gap: 10px;
+  height: 36px;
+  padding: 0 16px 0 12px;
+  font-size: 13px;
+}
+
+.google-sign-in.compact svg {
+  width: 18px;
+  height: 18px;
+}
+
 .projects-header,
 .projects-actions,
 .projects-header-actions {
@@ -2627,10 +3198,30 @@ button:disabled {
   gap: 12px;
 }
 
+/* The title grows to fill the first line, so buttons that wrap below it are centred. */
 .projects-header {
-  justify-content: space-between;
+  justify-content: center;
   padding-bottom: 20px;
   border-bottom: 1px solid var(--ring);
+}
+
+.projects-header > div:first-child {
+  flex: 1 1 auto;
+}
+
+.projects-header[data-wrapped] {
+  text-align: center;
+}
+
+/* Once the column is too narrow for a row of buttons to share one line, every row is centred. */
+@container projects (max-width: 640px) {
+  .projects-header,
+  .projects-header-actions,
+  .projects-actions,
+  .projects-message {
+    justify-content: center;
+    text-align: center;
+  }
 }
 
 .projects-header h2 {
@@ -2881,10 +3472,23 @@ button:disabled {
     grid-template-rows: 38px auto 36px minmax(0, 1fr) auto 24px;
   }
 
+  /* The bar stays on one line: the name field gives up width before any button moves. */
   .command-bar {
     min-height: 48px;
-    flex-wrap: wrap;
     padding: 8px 10px;
+  }
+
+  .command-spacer {
+    display: none;
+  }
+
+  .document-name {
+    min-width: 96px;
+    margin-right: auto;
+  }
+
+  .document-name input {
+    min-width: 0;
   }
 
   .document-name input {
@@ -2915,8 +3519,8 @@ button:disabled {
   }
 
   .mobile-tabs button[aria-selected="true"] {
-    color: var(--amber-text);
-    background: var(--btn-active);
+    color: var(--text-strong);
+    background: var(--graphite);
   }
 
   .tab-state {
@@ -2949,6 +3553,13 @@ button:disabled {
   }
 }
 
+/* Below this the full Compile label no longer fits beside the other buttons, so it drops the shortcut hint. */
+@media (max-width: 680px) {
+  .command-bar .compile-button kbd {
+    display: none;
+  }
+}
+
 @media (max-width: 620px) {
   .title-bar {
     grid-template-columns: 72px 1fr 72px;
@@ -2963,16 +3574,8 @@ button:disabled {
   }
 
   .account-button span,
-  .brand>span:last-child {
+  .brand > span:last-child {
     display: none;
-  }
-
-  .projects-header,
-  .projects-header-actions,
-  .projects-actions,
-  .projects-message {
-    justify-content: center;
-    text-align: center;
   }
 
   .source-content {
@@ -3015,15 +3618,25 @@ button:disabled {
     display: none;
   }
 
-  .preview-header {
-    min-height: 64px;
-    flex-wrap: wrap;
-    padding-top: 4px;
-    padding-bottom: 4px;
+  /* On phones Compile is a slim icon button; its label stays for screen readers. */
+  .command-bar .compile-button {
+    width: 32px;
+    min-width: 0;
+    height: 32px;
+    padding: 0;
+  }
+
+  .command-bar .compile-button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
   }
 
   .preview-pane {
-    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto minmax(0, 1fr);
   }
 
   .pdf-viewport {
@@ -3036,7 +3649,6 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: reduce) {
-
   *,
   *::before,
   *::after {
@@ -3049,18 +3661,17 @@ button:disabled {
 }
 
 @media (forced-colors: active) {
-
   .freshness,
   .toolbar-button,
   .account-button,
   .file-menu-button,
   .file-menu-list,
-  .pdf-edit-chip,
   .pdf-edit-popover,
   .pdf-edit-popover textarea,
   .pdf-edit-apply,
   .assistant-field :is(input, select),
-  .assistant-chip select,
+  .assistant-chip > button,
+  .assistant-menu,
   .assistant-tag,
   .assistant-box,
   .assistant-user,
@@ -3073,6 +3684,7 @@ button:disabled {
   .assistant-changes,
   .assistant-consent,
   .compile-button,
+  .google-sign-in,
   .secondary-button,
   .set-main-button,
   .document-name,
@@ -3090,6 +3702,10 @@ button:disabled {
 
   .pdf-match.active {
     outline-width: 2px;
+  }
+
+  .assistant-menu-option.active {
+    outline: 1px solid Highlight;
   }
 
   .explorer-resizer:hover::after,
