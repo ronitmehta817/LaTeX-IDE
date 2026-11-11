@@ -186,6 +186,7 @@ const SPLIT_KEY = "latex-editor:split:v1";
 const EXPLORER_WIDTH_KEY = "latex-editor:explorer-width:v1";
 const EXPLORER_HIDDEN_KEY = "latex-editor:explorer-hidden:v1";
 const ASSISTANT_OPEN_KEY = "latex-editor:assistant-open:v1";
+const ASSISTANT_WIDTH_KEY = "latex-editor:assistant-width:v1";
 const DRIVE_PROJECT_KEY = "latex-editor:drive-project:v1";
 const DRIVE_DIRTY_KEY = "latex-editor:drive-dirty:v1";
 // The saved assistant chat of the project that is only in this browser.
@@ -201,6 +202,9 @@ const DRIVE_SAVE_DELAY = 3000;
 const EXPLORER_DEFAULT_WIDTH = 172;
 const EXPLORER_MIN_WIDTH = 120;
 const EXPLORER_MAX_WIDTH = 480;
+const ASSISTANT_DEFAULT_WIDTH = 380;
+const ASSISTANT_MIN_WIDTH = 260;
+const ASSISTANT_MAX_WIDTH = 800;
 const MAX_IMPORT_BYTES = 25 * 1024 * 1024;
 const MAX_PROJECT_BYTES = 50 * 1024 * 1024;
 const MAX_PROJECT_FILES = 200;
@@ -667,6 +671,14 @@ function clampExplorerWidth(width: number, container: HTMLElement | null) {
     : EXPLORER_MAX_WIDTH;
   const max = Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, available));
   return Math.round(Math.min(max, Math.max(EXPLORER_MIN_WIDTH, width)));
+}
+
+function clampAssistantWidth(width: number, container: HTMLElement | null) {
+  const containerWidth = container ? container.getBoundingClientRect().width : 1200;
+  // Reserve space for the source and preview panes plus splitters (at least 360px)
+  const maxAvailable = Math.max(ASSISTANT_MIN_WIDTH, containerWidth - 360);
+  const max = Math.min(ASSISTANT_MAX_WIDTH, maxAvailable);
+  return Math.round(Math.min(max, Math.max(ASSISTANT_MIN_WIDTH, width)));
 }
 
 function isTextPath(path: string) {
@@ -2786,6 +2798,14 @@ export default function App() {
       ? Math.min(EXPLORER_MAX_WIDTH, Math.max(EXPLORER_MIN_WIDTH, stored))
       : EXPLORER_DEFAULT_WIDTH;
   });
+  const [assistantWidth, setAssistantWidth] = useState(() => {
+    const stored = Number(
+      safeStorageRead(ASSISTANT_WIDTH_KEY, String(ASSISTANT_DEFAULT_WIDTH)),
+    );
+    return Number.isFinite(stored)
+      ? Math.min(ASSISTANT_MAX_WIDTH, Math.max(ASSISTANT_MIN_WIDTH, stored))
+      : ASSISTANT_DEFAULT_WIDTH;
+  });
   const [explorerHidden, setExplorerHidden] = useState(
     () => safeStorageRead(EXPLORER_HIDDEN_KEY, "0") === "1",
   );
@@ -2834,6 +2854,8 @@ export default function App() {
   const requestRef = useRef(0);
   const draggingRef = useRef(false);
   const explorerDragRef = useRef<{ grab: number } | null>(null);
+  const assistantDragRef = useRef<{ grab: number } | null>(null);
+  const preExpandWidthRef = useRef(assistantWidth);
   const fileMenuRef = useRef<HTMLDivElement | null>(null);
   const fileMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const fileMenuFocusRef = useRef<"first" | "last">("first");
@@ -2952,6 +2974,25 @@ export default function App() {
       // The panel still opens when local storage is unavailable.
     }
   }, [assistantOpen]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ASSISTANT_WIDTH_KEY, String(assistantWidth));
+    } catch {
+      // The resizer remains usable when local storage is unavailable.
+    }
+  }, [assistantWidth]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      const workspace = document.querySelector<HTMLElement>(".workspace");
+      if (workspace) {
+        setAssistantWidth((current) => clampAssistantWidth(current, workspace));
+      }
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   useEffect(() => {
     try {
@@ -3893,24 +3934,35 @@ export default function App() {
   }, []);
 
   const startDragging = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.currentTarget.setPointerCapture(event.pointerId);
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    handle.dataset.dragging = "true";
     draggingRef.current = true;
   };
 
   const dragSplitter = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
+    if ((event.buttons & 1) === 0) {
+      stopDragging(event);
+      return;
+    }
     const workspace = event.currentTarget.parentElement;
     if (!workspace) return;
     const rect = workspace.getBoundingClientRect();
     const assistant = workspace.querySelector<HTMLElement>(".assistant-pane:not([hidden])");
-    const shared = rect.width - (assistant ? assistant.getBoundingClientRect().width + 10 : 0);
+    const shared = rect.width - (assistant ? assistant.getBoundingClientRect().width + 20 : 10);
     const next = ((event.clientX - rect.left) / shared) * 100;
     setSplit(Math.min(68, Math.max(32, next)));
   };
 
   const stopDragging = (event: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = false;
-    event.currentTarget.releasePointerCapture(event.pointerId);
+    delete event.currentTarget.dataset.dragging;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const adjustSplitWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
@@ -4026,6 +4078,76 @@ export default function App() {
     if (next === null) return;
     event.preventDefault();
     setExplorerWidth(clampExplorerWidth(next, container));
+  };
+
+  const isAssistantExpanded = assistantWidth >= 550;
+
+  const toggleExpandAssistant = () => {
+    const workspace = document.querySelector<HTMLElement>(".workspace");
+    if (isAssistantExpanded) {
+      setAssistantWidth(
+        clampAssistantWidth(
+          preExpandWidthRef.current < 550 ? preExpandWidthRef.current : ASSISTANT_DEFAULT_WIDTH,
+          workspace,
+        ),
+      );
+    } else {
+      preExpandWidthRef.current = assistantWidth;
+      const wideWidth = workspace ? Math.round(workspace.getBoundingClientRect().width * 0.5) : 600;
+      setAssistantWidth(clampAssistantWidth(Math.max(550, wideWidth), workspace));
+    }
+  };
+
+  const startAssistantResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    handle.dataset.dragging = "true";
+    assistantDragRef.current = {
+      grab: handle.getBoundingClientRect().right - event.clientX,
+    };
+  };
+
+  const stopAssistantResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    assistantDragRef.current = null;
+    delete event.currentTarget.dataset.dragging;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+
+  const dragAssistantSplitter = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = assistantDragRef.current;
+    if (!drag) return;
+    if ((event.buttons & 1) === 0) {
+      stopAssistantResize(event);
+      return;
+    }
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const nextWidth = rect.right - event.clientX - drag.grab;
+    setAssistantWidth(clampAssistantWidth(nextWidth, container));
+  };
+
+  const resizeAssistantWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const container = event.currentTarget.parentElement;
+    const current = clampAssistantWidth(assistantWidth, container);
+    const step = event.shiftKey ? 40 : 10;
+    const next =
+      event.key === "ArrowLeft"
+        ? current + step
+        : event.key === "ArrowRight"
+          ? current - step
+          : event.key === "Home"
+            ? ASSISTANT_MIN_WIDTH
+            : event.key === "End"
+              ? ASSISTANT_MAX_WIDTH
+              : null;
+    if (next === null) return;
+    event.preventDefault();
+    setAssistantWidth(clampAssistantWidth(next, container));
   };
 
   const googleActive = Boolean(googleSession) && driveState !== "expired";
@@ -4360,7 +4482,11 @@ export default function App() {
       <main
         className={`workspace active-${activePane}${showAssistant ? " with-assistant" : ""}`}
         style={
-          { "--source-width": `${split}%`, "--split-ratio": split / 100 } as React.CSSProperties
+          {
+            "--source-width": `${split}%`,
+            "--split-ratio": split / 100,
+            "--assistant-width": `${assistantWidth}px`,
+          } as React.CSSProperties
         }
       >
         <section
@@ -4538,6 +4664,8 @@ export default function App() {
           onPointerDown={startDragging}
           onPointerMove={dragSplitter}
           onPointerUp={stopDragging}
+          onPointerCancel={stopDragging}
+          onLostPointerCapture={stopDragging}
           onDoubleClick={() => setSplit(52)}
           onKeyDown={adjustSplitWithKeyboard}
         >
@@ -4553,6 +4681,28 @@ export default function App() {
           onPrepareEdit={syncTexData ? prepareTextEdit : undefined}
         />
 
+        {showAssistant && (
+          <div
+            className="splitter assistant-splitter"
+            role="separator"
+            aria-label="Resize assistant and preview panes"
+            aria-orientation="vertical"
+            aria-valuemin={ASSISTANT_MIN_WIDTH}
+            aria-valuemax={ASSISTANT_MAX_WIDTH}
+            aria-valuenow={Math.round(assistantWidth)}
+            tabIndex={0}
+            onPointerDown={startAssistantResize}
+            onPointerMove={dragAssistantSplitter}
+            onPointerUp={stopAssistantResize}
+            onPointerCancel={stopAssistantResize}
+            onLostPointerCapture={stopAssistantResize}
+            onDoubleClick={() => setAssistantWidth(ASSISTANT_DEFAULT_WIDTH)}
+            onKeyDown={resizeAssistantWithKeyboard}
+          >
+            <ArrowsLeftRight aria-hidden="true" />
+          </div>
+        )}
+
         <AssistantPanel
           host={assistantHost}
           hidden={!showAssistant}
@@ -4565,6 +4715,8 @@ export default function App() {
               ? (settings) => saveDriveSettings(googleSession, settings)
               : undefined
           }
+          isExpanded={isAssistantExpanded}
+          onToggleExpand={toggleExpandAssistant}
         />
       </main>
 

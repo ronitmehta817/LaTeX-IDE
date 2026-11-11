@@ -3,6 +3,8 @@ import {
   ArrowClockwise,
   ArrowCounterClockwise,
   ArrowRight,
+  ArrowsInSimple,
+  ArrowsOutSimple,
   ArrowUp,
   At,
   Brain,
@@ -1105,6 +1107,8 @@ export default function AssistantPanel({
   onClose,
   accountSettings,
   onSaveAccountSettings,
+  isExpanded,
+  onToggleExpand,
 }: {
   host: AssistantHost;
   hidden: boolean;
@@ -1116,6 +1120,8 @@ export default function AssistantPanel({
   // undefined until Google Drive has answered; null when Drive has no settings yet.
   accountSettings?: AccountSettings | null;
   onSaveAccountSettings?: (settings: AccountSettings) => Promise<void>;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
 }) {
   const [config, setConfig] = useState(loadConfig);
   const active = activeChoice(config);
@@ -1444,6 +1450,17 @@ export default function AssistantPanel({
           <h2 id="assistant-heading">Assistant</h2>
         </div>
         <div className="assistant-header-actions">
+          {onToggleExpand && (
+            <button
+              className={`icon-button${isExpanded ? " active" : ""}`}
+              type="button"
+              onClick={onToggleExpand}
+              aria-label={isExpanded ? "Restore assistant width" : "Expand assistant width"}
+              title={isExpanded ? "Restore width" : "Expand width"}
+            >
+              {isExpanded ? <ArrowsInSimple /> : <ArrowsOutSimple />}
+            </button>
+          )}
           <button
             className="icon-button"
             type="button"

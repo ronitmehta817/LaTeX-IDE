@@ -925,7 +925,8 @@ button:disabled {
 }
 
 .splitter:hover::before,
-.splitter:focus-visible::before {
+.splitter:focus-visible::before,
+.splitter[data-dragging]::before {
   background: var(--amber-text);
 }
 
@@ -941,7 +942,8 @@ button:disabled {
 }
 
 .splitter:hover svg,
-.splitter:focus-visible svg {
+.splitter:focus-visible svg,
+.splitter[data-dragging] svg {
   opacity: 1;
 }
 
@@ -1319,10 +1321,16 @@ button:disabled {
 
 /* The source/preview split shares only the width left beside the assistant. */
 .workspace.with-assistant {
-  --assistant-width: min(380px, 36vw);
   grid-template-columns:
-    minmax(0, calc((100% - 10px - var(--assistant-width)) * var(--split-ratio)))
-    10px minmax(0, 1fr) var(--assistant-width);
+    minmax(0, calc((100% - 20px - var(--assistant-width, 380px)) * var(--split-ratio)))
+    10px
+    minmax(0, 1fr)
+    10px
+    minmax(0, var(--assistant-width, 380px));
+}
+
+.workspace.with-assistant .assistant-pane {
+  border-left: 0;
 }
 
 .assistant-pane {
@@ -3710,7 +3718,10 @@ summary.assistant-thinking-head:hover {
 
   .explorer-resizer:hover::after,
   .explorer-resizer:focus-visible::after,
-  .explorer-resizer[data-dragging]::after {
+  .explorer-resizer[data-dragging]::after,
+  .splitter:hover::before,
+  .splitter:focus-visible::before,
+  .splitter[data-dragging]::before {
     forced-color-adjust: none;
     background: Highlight;
   }
